@@ -141,9 +141,11 @@ class HttpCaptureBridge:
         except Exception:
             return None
 
-    def readthrough(self, endpoint, request, fetch):
+    def readthrough(self, endpoint, request, fetch, *, predecessor_capture_id=None):
         try:
             body, status, received_at = fetch()
+            if status == 304 and predecessor_capture_id is None:
+                raise CaptureUnavailable("304 requires an explicit revalidated capture")
             metadata = dict(
                 capture_id=str(uuid4()),
                 provider="eodhd",
@@ -153,6 +155,8 @@ class HttpCaptureBridge:
                 received_at=received_at.isoformat(),
                 representation="requests-decoded-content",
             )
+            if status == 304:
+                metadata["predecessor_capture_id"] = str(UUID(str(predecessor_capture_id)))
             ack = self.retain(metadata, body)
             if 200 <= status < 300:
                 value = json.loads(body)

@@ -278,3 +278,44 @@ def test_internal_http_requires_explicit_trusted_network_opt_in(monkeypatch):
     monkeypatch.setenv("EODHD_CAPTURE_URL", "http://credential:secret@temporaldb-api:8080")
     with pytest.raises(C.CaptureUnavailable):
         C.configured_bridge()
+
+
+def test_304_transport_carries_explicit_revalidated_capture(bridge_server, monkeypatch):
+    from datetime import datetime, timezone
+
+    C = implementation()
+    state, url = bridge_server
+    configure(monkeypatch, url)
+    bridge = C.configured_bridge()
+    previous = str(uuid4())
+    monkeypatch.setattr(
+        bridge,
+        "latest",
+        lambda *args: C.CapturedBundle(
+            {"value": "A"}, capture_id=state["posted"][0]["capture_id"], stale=True
+        ),
+    )
+    result = bridge.readthrough(
+        "fundamentals",
+        {"symbol": "TEST.US"},
+        lambda: (b"", 304, datetime.now(timezone.utc)),
+        predecessor_capture_id=previous,
+    )
+    assert state["posted"][0]["predecessor_capture_id"] == previous
+    assert not result.stale and result["value"] == "A"
+
+
+def test_ambiguous_304_only_uses_stale_and_is_not_posted(bridge_server, monkeypatch):
+    from datetime import datetime, timezone
+
+    C = implementation()
+    state, url = bridge_server
+    configure(monkeypatch, url)
+    bridge = C.configured_bridge()
+    previous = C.CapturedBundle({"value": "A"}, capture_id=str(uuid4()), stale=True)
+    monkeypatch.setattr(bridge, "latest", lambda *args: previous)
+    result = bridge.readthrough(
+        "fundamentals", {"symbol": "TEST.US"}, lambda: (b"", 304, datetime.now(timezone.utc))
+    )
+    assert result.stale and result.capture_id == previous.capture_id
+    assert "posted" not in state

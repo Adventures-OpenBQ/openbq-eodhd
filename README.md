@@ -129,3 +129,10 @@ accepts private Compose HTTP only with `EODHD_CAPTURE_TRUST_INTERNAL_HTTP=1`.
 That opt-in trusts the configured internal network with the service token; never
 use it across an untrusted network. Standalone mode preserves the optional Arctic
 cache and no-op capture seam; a local spool is not a managed durable receipt.
+
+Conditional bridge callers must supply `predecessor_capture_id` identifying the
+receipt actually used to make the conditional request. The service stages that
+scoped identity and body digest before upload/retry; it never substitutes the
+latest capture at completion. Unexpected unbound 304 responses use scoped stale
+fallback and are not posted as successful captures. The current SDK fundamentals
+path does not synthesize conditional requests or infer a predecessor from latest.
