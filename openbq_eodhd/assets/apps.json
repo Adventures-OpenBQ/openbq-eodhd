@@ -1,0 +1,149 @@
+[
+  {
+    "name": "EODHD",
+    "img": "",
+    "img_dark": "",
+    "img_light": "",
+    "description": "EODHD company and market data: profile, quotes, prices, fundamentals and ownership.",
+    "allowCustomization": true,
+    "tabs": {
+      "company": {
+        "id": "company",
+        "name": "Company",
+        "layout": [
+          {
+            "i": "eodhd_equity_profile_eodhd_obb",
+            "x": 0,
+            "y": 2,
+            "w": 20,
+            "h": 15,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          },
+          {
+            "i": "eodhd_equity_price_quote_eodhd_obb",
+            "x": 20,
+            "y": 2,
+            "w": 20,
+            "h": 15,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          },
+          {
+            "i": "eodhd_equity_price_historical_eodhd_obb",
+            "x": 0,
+            "y": 17,
+            "w": 40,
+            "h": 20,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          },
+          {
+            "i": "eodhd_equity_fundamental_income_eodhd_obb",
+            "x": 0,
+            "y": 37,
+            "w": 40,
+            "h": 18,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          }
+        ]
+      },
+      "ownership": {
+        "id": "ownership",
+        "name": "Ownership & Dividends",
+        "layout": [
+          {
+            "i": "eodhd_equity_fundamental_dividends_eodhd_obb",
+            "x": 0,
+            "y": 2,
+            "w": 20,
+            "h": 18,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          },
+          {
+            "i": "eodhd_equity_ownership_institutional_eodhd_obb",
+            "x": 20,
+            "y": 2,
+            "w": 20,
+            "h": 18,
+            "state": {
+              "params": {
+                "symbol": "AAPL"
+              }
+            },
+            "groups": [
+              "Group 1"
+            ]
+          }
+        ]
+      },
+      "markets": {
+        "id": "markets",
+        "name": "Markets",
+        "layout": [
+          {
+            "i": "eodhd_fixedincome_government_yield_curve_eodhd_obb",
+            "x": 0,
+            "y": 2,
+            "w": 20,
+            "h": 18,
+            "groups": []
+          },
+          {
+            "i": "eodhd_index_price_historical_eodhd_obb",
+            "x": 20,
+            "y": 2,
+            "w": 20,
+            "h": 18,
+            "state": {
+              "params": {
+                "symbol": "GSPC.INDX"
+              }
+            },
+            "groups": []
+          }
+        ]
+      }
+    },
+    "groups": [
+      {
+        "name": "Group 1",
+        "type": "param",
+        "paramName": "symbol",
+        "defaultValue": "AAPL"
+      }
+    ]
+  }
+]

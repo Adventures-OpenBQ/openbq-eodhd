@@ -1,0 +1,15 @@
+openbq-eodhd
+Copyright 2026 SecretoftheUniverse.com LLC
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Provenance: this package is the EODHD provider extension `openbb-eodhd` from
+bdobb-dev/openbb-docker (directory `openbb-eodhd/`), base v9.6.3 (99864f2) with
+its fixes through v9.6.6 (68afaa7): commits 99864f2, bbd67cd, 9068e36, 73d0c92,
+498d317, eb73012, 564e5ee, cd0aaeb. Original author: Art Cashin (artcashin),
+with Claude co-author trailers. Renamed openbq-eodhd (module openbq_eodhd) for
+Adventures-OpenBQ; the OpenBB provider name `eodhd`, its core extension `eodhd`
+(obb.eodhd.*, /api/v1/eodhd) and the widget ids `eodhd_*_eodhd_obb` are unchanged.
+
+It uses the official EODHD Python library (EOD Historical Data, MIT per its PyPI
+metadata), pinned to a GitHub commit in pyproject.toml; it is not stored here.

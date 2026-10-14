@@ -1,0 +1,55 @@
+# Copyright 2026 SecretoftheUniverse.com LLC. Licensed under the Apache License, Version 2.0.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openbq-eodhd"
+version = "9.0.0"
+description = "EODHD provider extension for OpenBB (equity/crypto/currency historical, fundamentals, corporate actions, ownership, insider trading, analyst estimates)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openbb-core>=2.0.1,<3",
+    # Official EODHD SDK, pinned to a GitHub commit (main, 2026-07-28): the
+    # PyPI release (1.0.32) predates the SDK's typed errors (it can sys.exit()
+    # on API errors), request timeouts, and the fundamentals `filter` param.
+    "eodhd @ https://github.com/EodHistoricalData/EODHD-APIs-Python-Financial-Library/archive/f98e69d797140ca03f16fa7451046d84aab9643e.tar.gz",
+]
+
+# Registers the `eodhd` provider with OpenBB's plugin system.
+[project.entry-points."openbb_provider_extension"]
+eodhd = "openbq_eodhd:eodhd_provider"
+
+# Mounts the obb.eodhd.* mirror router. OpenBB mounts a core extension under
+# its entry-point name, so the key `eodhd` puts the router at /api/v1/eodhd.
+[project.entry-points."openbb_core_extension"]
+eodhd = "openbq_eodhd.eodhd_router:router"
+
+[tool.setuptools.packages.find]
+include = ["openbq_eodhd*"]
+
+[tool.setuptools.package-data]
+openbq_eodhd = ["assets/*.json"]
+
+[project.optional-dependencies]
+dev = ["ruff==0.15.22", "pytest"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".git", "__pycache__", "*.egg-info", "build", "dist", "tests/__pycache__"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff.lint]
+ignore = [
+    # Import-outside-toplevel is intentional: lazy imports avoid loading
+    # heavy deps at module-import time.
+    "PLC0415",
+]
