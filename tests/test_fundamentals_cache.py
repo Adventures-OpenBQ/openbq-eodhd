@@ -132,13 +132,13 @@ def test_expired_entries_swept_on_next_populate(monkeypatch):
     monkeypatch.setattr(F.time, "monotonic", lambda: 1000.0)
 
     asyncio.run(F.get_bundle("AAAA", "US", {"eodhd_api_key": "PLACEHOLDER"}))
-    assert "AAAA.US" in F._cache
+    assert F._cache_key("AAAA.US", {"eodhd_api_key": "PLACEHOLDER"}) in F._cache
 
     monkeypatch.setattr(F.time, "monotonic", lambda: 1000.0 + F._TTL_SECONDS + 1)
     asyncio.run(F.get_bundle("BBBB", "US", {"eodhd_api_key": "PLACEHOLDER"}))
 
-    assert "AAAA.US" not in F._cache
-    assert "BBBB.US" in F._cache
+    assert F._cache_key("AAAA.US", {"eodhd_api_key": "PLACEHOLDER"}) not in F._cache
+    assert F._cache_key("BBBB.US", {"eodhd_api_key": "PLACEHOLDER"}) in F._cache
 
 
 def test_l2_unavailable_falls_back_to_live_fetch(monkeypatch):
