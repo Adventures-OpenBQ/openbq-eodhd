@@ -27,9 +27,10 @@ class NoCapturedValue(CaptureUnavailable):
 class CapturedBundle(dict):
     """Ordinary provider bundle with provenance available to managed callers."""
 
-    def __init__(self, value, *, capture_id, stale):
+    def __init__(self, value, *, capture_id, stale, received_at=None):
         super().__init__(value)
         self.capture_id, self.stale = capture_id, stale
+        self.received_at = received_at
 
 
 _hook = None
@@ -137,7 +138,24 @@ class HttpCaptureBridge:
             value = json.loads(base64.b64decode(result["body_base64"], validate=True))
             if not isinstance(value, dict) or not value:
                 return None
-            return CapturedBundle(value, capture_id=str(UUID(result["capture_id"])), stale=True)
+            return CapturedBundle(value, capture_id=str(UUID(result["capture_id"])), stale=True, received_at=result["received_at"])
+        except Exception:
+            return None
+
+    def latest_response(self, endpoint, request):
+        """Rebuild an SDK response from server-owned stale receipt and retained bytes."""
+        try:
+            import requests
+            result = self._call("GET", query="?" + urlencode({"request_key":self.request_key(endpoint, request)}))
+            body = base64.b64decode(result["body_base64"], validate=True)
+            value = json.loads(body)
+            if not isinstance(value, (dict,list)) or not value:
+                return None
+            receipt = dict(capture_id=str(UUID(result["capture_id"])),stale=True,
+                received_at=result["received_at"],representation="requests-decoded-content")
+            response = requests.Response()
+            response.status_code, response._content = 200, body
+            return response, receipt
         except Exception:
             return None
 
@@ -161,7 +179,7 @@ class HttpCaptureBridge:
             if 200 <= status < 300:
                 value = json.loads(body)
                 if isinstance(value, dict) and value:
-                    return CapturedBundle(value, capture_id=ack["capture_id"], stale=False)
+                    return CapturedBundle(value, capture_id=ack["capture_id"], stale=False, received_at=received_at.isoformat())
             elif status == 304:
                 response = self.latest(endpoint, request)
                 if response is not None and response.capture_id == ack["capture_id"]:
@@ -179,6 +197,8 @@ class HttpCaptureBridge:
 def configured_bridge():
     if os.getenv("EODHD_CAPTURE_REQUIRED", "0") != "1":
         return None
+    from .transport import require_capability
+    require_capability(os.getenv('EODHD_CAPTURE_CAPABILITY','requests-decoded-content'))
     try:
         return HttpCaptureBridge(
             *(

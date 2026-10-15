@@ -4,6 +4,7 @@
 """EODHD provider module for OpenBB."""
 
 from openbb_core.provider.abstract.provider import Provider
+from openbq_eodhd.transport import instrument_provider as _instrument_provider
 from openbq_eodhd.capture import configured_bridge as _configured_capture_bridge
 
 from openbq_eodhd.models.calendar import (
@@ -233,3 +234,5 @@ for _std_key, _fetcher in list(eodhd_provider.fetcher_dict.items()):
 
 # Managed deployments fail startup without their shared durable bridge.
 _configured_capture_bridge()
+
+_instrument_provider(eodhd_provider)

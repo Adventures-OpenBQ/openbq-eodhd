@@ -143,9 +143,9 @@ def _l2_put(sym: str, bundle: dict) -> None:
         return
 
 
-def _managed_fetch_sync(sym, credentials):
+def _managed_fetch_sync(sym, credentials, *, client=None):
     """Observe response content before the pinned SDK decodes JSON or raises."""
-    client = get_client(credentials)
+    client = client or get_client(credentials)
     observed = []
     def observe(response, *args, **kwargs):
         observed.append((response.content, response.status_code, datetime.now(timezone.utc)))
@@ -165,7 +165,17 @@ def _managed_fetch_sync(sym, credentials):
 def _read_through_sync(sym: str, credentials: dict[str, str] | None) -> dict:
     bridge = _capture.configured_bridge()
     if bridge is not None:
-        return bridge.readthrough('fundamentals', {'symbol': sym}, lambda: _managed_fetch_sync(sym, credentials))
+        client = get_client(credentials)
+        if getattr(client._session, '_temporaldb_capture', False):
+            with client:
+                value = client.get_fundamentals_data(sym)
+            receipt = client._session._temporaldb_last_receipt
+            return _capture.CapturedBundle(value, capture_id=receipt['capture_id'], stale=receipt['stale'], received_at=receipt['received_at'])
+        # Optional host seam for injected SDKs: B4 observes bytes before decoding.
+        value = bridge.readthrough('fundamentals', {'symbol': sym}, lambda: _managed_fetch_sync(sym, credentials, client=client))
+        from openbq_eodhd.transport import record_receipt
+        record_receipt(dict(capture_id=value.capture_id,stale=value.stale,received_at=value.received_at,representation='requests-decoded-content'))
+        return value
     key = _cache_key(sym, credentials)
     hit = _l2_get(key)
     if hit is not None:
@@ -179,6 +189,8 @@ async def get_bundle(
     symbol: str, exchange: str, credentials: dict[str, str] | None
 ) -> dict:
     sym = qualify(symbol, exchange)
+    if _capture.configured_bridge() is not None:
+        return await to_thread(_read_through_sync, sym, credentials)
     key = _cache_key(sym, credentials)
     cached = _cached(key)
     if cached is not None:
