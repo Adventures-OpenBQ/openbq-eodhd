@@ -165,6 +165,7 @@ def _managed_fetch_sync(sym, credentials, *, client=None):
 def _read_through_sync(sym: str, credentials: dict[str, str] | None) -> dict:
     bridge = _capture.configured_bridge()
     if bridge is not None:
+        credentials = _capture.managed_credentials(credentials)
         client = get_client(credentials)
         if getattr(client._session, '_temporaldb_capture', False):
             with client:

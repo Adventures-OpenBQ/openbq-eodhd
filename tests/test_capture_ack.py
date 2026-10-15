@@ -48,6 +48,7 @@ def bridge_server():
             self.reply(
                 dict(
                     capture_id=item["capture_id"],
+                    account="recorded-account",
                     body_base64=base64.b64encode(item["body"]).decode(),
                     stale=True,
                     received_at=item["received_at"],
@@ -67,7 +68,7 @@ def bridge_server():
                 self.end_headers()
                 return
             if self.path.endswith("?acquire=1"):
-                self.reply({"state":"owner", "acquisition_id":str(uuid4())})
+                self.reply({"state":"owner", "acquisition_id":str(uuid4()), "account":"recorded-account"})
                 return
             state["posted"] = meta, body
             state["retained"][meta["capture_id"]] = dict(meta, body=body)
@@ -96,6 +97,8 @@ def bridge_server():
 def configure(monkeypatch, url):
     env = dict(
         EODHD_CAPTURE_REQUIRED="1",
+        EODHD_CAPTURE_ACCOUNT="recorded-account",
+        EODHD_API_KEY="key",
         EODHD_CAPTURE_URL=url,
         EODHD_CAPTURE_TOKEN="fixture-token",
         EODHD_CAPTURE_WORKSPACE_ID=str(uuid4()),
@@ -139,7 +142,7 @@ def test_managed_capture_retains_decoded_http_content_before_return(bridge_serve
     configure(monkeypatch, url)
     client(monkeypatch, url)
     F._reset_cache_for_tests()
-    result = asyncio.run(F.get_bundle("TEST", "US", {"eodhd_api_key": "secret-provider-key"}))
+    result = asyncio.run(F.get_bundle("TEST", "US", {"eodhd_api_key": "key"}))
     assert result["General"]["Code"] == "TEST"
     meta, body = state["posted"]
     assert body == state["body"] and meta["representation"] == "requests-decoded-content"
@@ -251,6 +254,7 @@ def test_pinned_sdk_response_hook_observes_bytes_before_json_and_typed_errors(
     state, url = bridge_server
     configure(monkeypatch, url)
     state["body"], state["status"] = body, status
+    monkeypatch.setenv("EODHD_API_KEY", "demo")
     sdk = APIClient("demo")
     original = sdk._session.get
     monkeypatch.setattr(

@@ -18,6 +18,8 @@ from openbb_core.provider.utils.errors import UnauthorizedError
 
 def get_client(credentials: dict[str, str] | None):
     """Build an official-SDK APIClient from OpenBB credentials."""
+    from openbq_eodhd.capture import managed_credentials
+    credentials = managed_credentials(credentials)
     api_key = (credentials or {}).get("eodhd_api_key")
     if not api_key:
         raise UnauthorizedError("Missing EODHD credential. Set EODHD_API_KEY.")

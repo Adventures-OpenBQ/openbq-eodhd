@@ -276,3 +276,13 @@ def test_http_timing_adapter_and_allowlisted_headers():
     assert metadata['request_duration_ms'] >= 0
     assert metadata['adapter_version'] == 'openbq-eodhd-capture:2'
     assert metadata['response_headers'] == {'content-type':'application/json','etag':'"x"'}
+
+
+def test_managed_credentials_refuse_foreign_per_call_account(monkeypatch):
+    import openbq_eodhd.capture as capture
+    monkeypatch.setenv('EODHD_CAPTURE_REQUIRED','1')
+    monkeypatch.setenv('EODHD_API_KEY','configured-test-key')
+    monkeypatch.setenv('EODHD_CAPTURE_ACCOUNT','account-a')
+    with pytest.raises(capture.CaptureUnavailable):
+        capture.managed_credentials({'eodhd_api_key':'foreign-key'})
+    assert capture.managed_credentials(None)=={'eodhd_api_key':'configured-test-key'}

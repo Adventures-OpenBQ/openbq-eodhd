@@ -171,6 +171,8 @@ def instrument_provider(provider):
             bridge = configured_bridge()
             if bridge is None:
                 return await _original(params, credentials, **kwargs)
+            from .capture import managed_credentials
+            credentials = managed_credentials(credentials)
             if _entry["mode"] == "unsupported":
                 raise CapabilityUnavailable(_entry["reason"])
             receipts = []

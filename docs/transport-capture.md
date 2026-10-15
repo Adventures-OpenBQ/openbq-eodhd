@@ -9,3 +9,10 @@ The per-client SDK session retains each requests response before SDK JSON output
 `EODHD_CAPTURE_CAPABILITY` defaults to `requests-decoded-content`; `http_body` and publication-history claims are unsupported. Model output carries `temporaldb.captures` and aggregate `temporaldb.stale` through OpenBB `AnnotatedResult` into `OBBject.extra.results_metadata`. Managed fundamentals bypass local L1/L2 freshness so a local object cannot recertify a receipt as fresh. Standalone caching behavior is unchanged.
 
 Only local acquisition knowledge is available; provider publication and complete correction history are unknown. New endpoints must add reviewed request identities and manifest declarations before they can run in audited mode. All verification uses local fixture responses.
+
+Managed v11 hosts set `EODHD_CAPTURE_ACCOUNT` to the opaque provider account ID
+assigned to their private capture token by TemporalDB's server policy, and set
+`EODHD_API_KEY` to that account's configured key. The bridge checks the server's
+account on acquisition and stale fallback. It rejects a per-call EODHD key that
+differs from the configured key before constructing a vendor request. Missing
+account configuration fails closed. The unmanaged legacy path is unchanged.

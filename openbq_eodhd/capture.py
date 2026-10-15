@@ -57,7 +57,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 class HttpCaptureBridge:
     def __init__(
-        self, url, token, workspace_id, entitlement, principal, *, trusted_internal_http=False
+        self, url, token, workspace_id, entitlement, principal, *, trusted_internal_http=False, account_id=None
     ):
         parsed = urlsplit(url)
         if (
@@ -83,6 +83,7 @@ class HttpCaptureBridge:
         self.url, self._token = url.rstrip("/"), token
         self.scope = (workspace_id, entitlement, principal)
         self.entitlement = entitlement
+        self.account_id = account_id
 
     def cache_scope(self):
         # Scope and credential-policy identity; no credential leaves the process.
@@ -122,6 +123,8 @@ class HttpCaptureBridge:
         while True:
             result = self._call('POST', metadata=metadata, body=b'', query='?acquire=1')
             UUID(result['acquisition_id'])
+            if self.account_id is not None and result.get('account') != self.account_id:
+                raise CaptureUnavailable('server provider account differs from configured host account')
             if result['state'] in {'owner','complete'}:
                 return result
             if result['state'] != 'pending' or time.monotonic() >= deadline:
@@ -150,6 +153,8 @@ class HttpCaptureBridge:
             result = self._call(
                 "GET", query="?" + urlencode({"request_key": self.request_key(endpoint, request)})
             )
+            if self.account_id is not None and result.get('account') != self.account_id:
+                return None
             value = json.loads(base64.b64decode(result["body_base64"], validate=True))
             if not isinstance(value, dict) or not value:
                 return None
@@ -162,6 +167,8 @@ class HttpCaptureBridge:
         try:
             import requests
             result = self._call("GET", query="?" + urlencode({"request_key":self.request_key(endpoint, request)}))
+            if self.account_id is not None and result.get('account') != self.account_id:
+                return None
             body = base64.b64decode(result["body_base64"], validate=True)
             value = json.loads(body)
             if not isinstance(value, (dict,list)) or not value:
@@ -240,6 +247,21 @@ def configured_bridge():
                 )
             ),
             trusted_internal_http=os.getenv("EODHD_CAPTURE_TRUST_INTERNAL_HTTP") == "1",
+            account_id=os.environ["EODHD_CAPTURE_ACCOUNT"],
         )
     except KeyError:
         raise CaptureUnavailable("required shared capture bridge is not configured") from None
+
+
+def managed_credentials(credentials):
+    """Required capture hosts use only the operator-bound provider account key."""
+    if os.getenv('EODHD_CAPTURE_REQUIRED', '0') != '1':
+        return credentials
+    import hmac
+    configured = os.getenv('EODHD_API_KEY')
+    if not configured or not os.getenv('EODHD_CAPTURE_ACCOUNT'):
+        raise CaptureUnavailable('managed provider account credentials are not configured')
+    supplied = (credentials or {}).get('eodhd_api_key')
+    if supplied is not None and not hmac.compare_digest(str(supplied), configured):
+        raise CaptureUnavailable('per-call provider credentials differ from managed account')
+    return dict(credentials or {}, eodhd_api_key=configured)
