@@ -13,6 +13,7 @@ requests for the same symbol within the TTL window share a single HTTP call.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 from asyncio import Lock, to_thread
@@ -23,6 +24,7 @@ from openbb_core.app.model.abstract.error import OpenBBError
 from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 
 from openbq_eodhd.models._client import get_client, raise_sdk_error
+from openbq_eodhd import capture as _capture
 
 _TTL_SECONDS = 120.0            # L1 in-process burst-coalescing TTL
 _L2_LIBRARY = "eodhd_fundamentals_cache"
@@ -40,6 +42,17 @@ def _l2_ttl_seconds() -> float:
 def qualify(symbol: str, exchange: str = "US") -> str:
     s = symbol.strip().upper()
     return s if "." in s else f"{s}.{exchange.upper()}"
+
+
+def _cache_key(sym: str, credentials: dict[str, str] | None) -> str:
+    """Credential and canonical policy scoped coalescing; never persist secrets."""
+    token = (credentials or {}).get("eodhd_api_key")
+    if not isinstance(token, str) or not token.strip():
+        raise UnauthorizedError("Missing EODHD credential. Set EODHD_API_KEY.")
+    bridge = _capture.configured_bridge()
+    scope = bridge.cache_scope() if bridge is not None else ('standalone',)
+    identity = json.dumps([scope, token, sym], separators=(",", ":"))
+    return 'v3_' + hashlib.sha256(identity.encode()).hexdigest()
 
 
 def _reset_cache_for_tests() -> None:
@@ -130,13 +143,46 @@ def _l2_put(sym: str, bundle: dict) -> None:
         return
 
 
+def _managed_fetch_sync(sym, credentials, *, client=None):
+    """Observe response content before the pinned SDK decodes JSON or raises."""
+    client = client or get_client(credentials)
+    observed = []
+    def observe(response, *args, **kwargs):
+        observed.append((response.content, response.status_code, datetime.now(timezone.utc)))
+        return response
+    client._session.hooks.setdefault('response', []).append(observe)
+    try:
+        with client:
+            client.get_fundamentals_data(sym)
+    except Exception:
+        if not observed:
+            raise _capture.CaptureUnavailable('provider transport unavailable') from None
+    if len(observed) != 1:
+        raise _capture.CaptureUnavailable('expected one observed fundamentals response')
+    return observed[0]
+
+
 def _read_through_sync(sym: str, credentials: dict[str, str] | None) -> dict:
-    """L2 get -> EODHD fetch -> L2 put. Runs in a worker thread."""
-    hit = _l2_get(sym)
+    bridge = _capture.configured_bridge()
+    if bridge is not None:
+        credentials = _capture.managed_credentials(credentials)
+        client = get_client(credentials)
+        if getattr(client._session, '_temporaldb_capture', False):
+            with client:
+                value = client.get_fundamentals_data(sym)
+            receipt = client._session._temporaldb_last_receipt
+            return _capture.CapturedBundle(value, capture_id=receipt['capture_id'], stale=receipt['stale'], received_at=receipt['received_at'])
+        # Optional host seam for injected SDKs: B4 observes bytes before decoding.
+        value = bridge.readthrough('fundamentals', {'symbol': sym}, lambda: _managed_fetch_sync(sym, credentials, client=client))
+        from openbq_eodhd.transport import record_receipt
+        record_receipt(dict(capture_id=value.capture_id,stale=value.stale,received_at=value.received_at,representation='requests-decoded-content'))
+        return value
+    key = _cache_key(sym, credentials)
+    hit = _l2_get(key)
     if hit is not None:
         return hit
     bundle = _fetch_sync(sym, credentials)
-    _l2_put(sym, bundle)
+    _l2_put(key, bundle)
     return bundle
 
 
@@ -144,18 +190,22 @@ async def get_bundle(
     symbol: str, exchange: str, credentials: dict[str, str] | None
 ) -> dict:
     sym = qualify(symbol, exchange)
-    cached = _cached(sym)
+    if _capture.configured_bridge() is not None:
+        return await to_thread(_read_through_sync, sym, credentials)
+    key = _cache_key(sym, credentials)
+    cached = _cached(key)
     if cached is not None:
         return cached
-    async with _get_lock(sym):
-        cached = _cached(sym)  # another coroutine may have filled it while we waited
+    async with _get_lock(key):
+        cached = _cached(key)  # another coroutine may have filled it while we waited
         if cached is not None:
             return cached
         payload = await to_thread(_read_through_sync, sym, credentials)
         now = time.monotonic()
         for k in [k for k, (exp, _) in list(_cache.items()) if exp <= now]:
             _cache.pop(k, None)
-        _cache[sym] = (now + _TTL_SECONDS, payload)
+        if not getattr(payload, 'stale', False):
+            _cache[key] = (now + _TTL_SECONDS, payload)
         return payload
 
 

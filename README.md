@@ -106,3 +106,33 @@ python -c "import openbb; openbb.build()"   # regenerate the static package
 ## License
 
 Apache-2.0 — see `LICENSE`.
+
+### Managed TemporalDB capture
+
+Set `EODHD_CAPTURE_REQUIRED=1` and all bridge/policy variables in `.env.example`
+for an audited deployment. The workspace, entitlement and principal identify the
+local cache policy; TemporalDB independently authenticates the service token and
+derives the authoritative scope. Use separate service tokens for distinct policy
+scopes. Entitlement selection must be granted by that server policy.
+
+Managed fundamentals bypass optional ArcticDB, observe `requests.Response.content`
+before SDK JSON parsing, and wait for a shared S3/PostgreSQL capture receipt. This
+representation is **requests-decoded-content**, including HTTP decompression;
+it is not literal wire bytes or reserialized SDK JSON. Malformed and HTTP error
+bodies are retained. A capture failure uses only the service's scoped previously
+acknowledged value (`CapturedBundle.stale=True`), or raises `NO_CAPTURED_VALUE`.
+Stale responses never populate the process cache. Receipt retries preserve the
+capture ID; credentials and raw request URLs are excluded from capture metadata.
+
+The bridge permits HTTPS and loopback HTTP by default, refuses redirects, and
+accepts private Compose HTTP only with `EODHD_CAPTURE_TRUST_INTERNAL_HTTP=1`.
+That opt-in trusts the configured internal network with the service token; never
+use it across an untrusted network. Standalone mode preserves the optional Arctic
+cache and no-op capture seam; a local spool is not a managed durable receipt.
+
+Conditional bridge callers must supply `predecessor_capture_id` identifying the
+receipt actually used to make the conditional request. The service stages that
+scoped identity and body digest before upload/retry; it never substitutes the
+latest capture at completion. Unexpected unbound 304 responses use scoped stale
+fallback and are not posted as successful captures. The current SDK fundamentals
+path does not synthesize conditional requests or infer a predecessor from latest.
