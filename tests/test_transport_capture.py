@@ -286,3 +286,16 @@ def test_managed_credentials_refuse_foreign_per_call_account(monkeypatch):
     with pytest.raises(capture.CaptureUnavailable):
         capture.managed_credentials({'eodhd_api_key':'foreign-key'})
     assert capture.managed_credentials(None)=={'eodhd_api_key':'configured-test-key'}
+
+
+def test_configured_account_is_asserted_before_acquisition():
+    from openbq_eodhd.capture import HttpCaptureBridge
+    value=HttpCaptureBridge('http://localhost','fixture',str(uuid4()),'paid','alice')
+    value.account_id='trusted'
+    calls=[]
+    def call(method,**kwargs):
+        calls.append(kwargs)
+        return dict(state='owner',acquisition_id=str(uuid4()),account='trusted')
+    value._call=call
+    value.acquire('value',{})
+    assert calls[0]['metadata']['expected_account']=='trusted'

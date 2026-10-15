@@ -119,6 +119,8 @@ class HttpCaptureBridge:
 
     def acquire(self, endpoint, request):
         metadata = dict(provider='eodhd', endpoint=endpoint, request=request, operation_id=str(uuid4()))
+        if self.account_id is not None:
+            metadata['expected_account'] = self.account_id
         deadline = time.monotonic() + 60
         while True:
             result = self._call('POST', metadata=metadata, body=b'', query='?acquire=1')
