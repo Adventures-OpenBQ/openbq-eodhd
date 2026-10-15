@@ -62,11 +62,14 @@ def bridge_server():
                 return
             body = self.rfile.read(int(self.headers["Content-Length"]))
             meta = json.loads(self.headers["X-TemporalDB-Capture"])
-            state["posted"] = meta, body
             if state["fail"]:
                 self.send_response(503)
                 self.end_headers()
                 return
+            if self.path.endswith("?acquire=1"):
+                self.reply({"state":"owner", "acquisition_id":str(uuid4())})
+                return
+            state["posted"] = meta, body
             state["retained"][meta["capture_id"]] = dict(meta, body=body)
             ack = dict(
                 capture_id=meta["capture_id"], payload_sha256=sha256(body).hexdigest(), durable=True

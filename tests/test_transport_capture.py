@@ -42,6 +42,8 @@ def bridge():
     value.events = []
 
     def call(method, *, metadata=None, body=None, query=""):
+        if query == '?acquire=1':
+            return {'state':'owner','acquisition_id':str(uuid4())}
         if method == "GET":
             raise OSError("fixture has no fallback")
         value.events.append((metadata, body))
@@ -97,7 +99,7 @@ def test_failed_capture_and_unreviewed_request_cannot_expose_new_bytes():
         session.get("https://eodhd.com/api/unknown?api_token=credential")
     with pytest.raises(module.CapabilityUnavailable):
         session.get("https://eodhd.com/api/eod/TEST.US?opaque=credential")
-    assert len(adapter.calls) == 1
+    assert len(adapter.calls) == 0
 
 
 def test_endpoint_manifest_covers_provider_models_and_router_mirrors():
@@ -253,3 +255,24 @@ def test_requested_wire_capability_fails_before_sdk_acquisition(monkeypatch):
     module = implementation()
     with pytest.raises(module.CapabilityUnavailable):
         module.require_capability("http_body")
+
+
+def test_http_timing_adapter_and_allowlisted_headers():
+    module = implementation()
+    shared = bridge()
+    session = requests.Session()
+    adapter = LocalAdapter([(200, b'[{"date":"2020-01-01","close":12}]')])
+    original = adapter.send
+    def respond(request, **kwargs):
+        response = original(request, **kwargs)
+        response.headers.update({'Content-Type':'application/json','Set-Cookie':'secret','ETag':'"x"'})
+        return response
+    adapter.send = respond
+    session.mount('https://', adapter)
+    module.attach_session(session, shared)
+    session.get('https://eodhd.com/api/eod/TEST.US')
+    metadata = shared.events[0][0]
+    assert datetime.fromisoformat(metadata['request_started_at']) <= datetime.fromisoformat(metadata['received_at'])
+    assert metadata['request_duration_ms'] >= 0
+    assert metadata['adapter_version'] == 'openbq-eodhd-capture:2'
+    assert metadata['response_headers'] == {'content-type':'application/json','etag':'"x"'}

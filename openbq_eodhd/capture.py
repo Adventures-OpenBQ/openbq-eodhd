@@ -11,6 +11,8 @@ import base64
 from hashlib import sha256
 import json
 import os
+import time
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 from uuid import UUID, uuid4
@@ -114,6 +116,19 @@ class HttpCaptureBridge:
             json.dumps(["eodhd", endpoint, request], sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
 
+    def acquire(self, endpoint, request):
+        metadata = dict(provider='eodhd', endpoint=endpoint, request=request, operation_id=str(uuid4()))
+        deadline = time.monotonic() + 60
+        while True:
+            result = self._call('POST', metadata=metadata, body=b'', query='?acquire=1')
+            UUID(result['acquisition_id'])
+            if result['state'] in {'owner','complete'}:
+                return result
+            if result['state'] != 'pending' or time.monotonic() >= deadline:
+                raise CaptureUnavailable('shared acquisition unavailable')
+            metadata['wait_for'] = result['acquisition_id']
+            time.sleep(0.05)
+
     def retain(self, metadata, body):
         digest = sha256(body).hexdigest()
         for attempt in range(2):
@@ -161,17 +176,30 @@ class HttpCaptureBridge:
 
     def readthrough(self, endpoint, request, fetch, *, predecessor_capture_id=None):
         try:
+            acquisition = self.acquire(endpoint, request)
+            if acquisition['state']=='complete':
+                value = json.loads(base64.b64decode(acquisition['body_base64'], validate=True))
+                if not 200 <= acquisition['http_status'] < 300:
+                    raise CaptureUnavailable('joined acquisition failed')
+                return CapturedBundle(value,capture_id=acquisition['capture_id'],stale=False,received_at=acquisition['received_at'])
+            started = datetime.now(timezone.utc).isoformat()
+            clock = time.monotonic()
             body, status, received_at = fetch()
             if status == 304 and predecessor_capture_id is None:
                 raise CaptureUnavailable("304 requires an explicit revalidated capture")
             metadata = dict(
-                capture_id=str(uuid4()),
+                capture_id=acquisition['acquisition_id'],
+                acquisition_id=acquisition['acquisition_id'],
                 provider="eodhd",
                 endpoint=endpoint,
                 request=request,
                 http_status=status,
                 received_at=received_at.isoformat(),
                 representation="requests-decoded-content",
+                request_started_at=started,
+                request_duration_ms=(time.monotonic() - clock) * 1000,
+                adapter_version="openbq-eodhd-capture:2",
+                response_headers=None,
             )
             if status == 304:
                 metadata["predecessor_capture_id"] = str(UUID(str(predecessor_capture_id)))

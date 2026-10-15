@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from functools import wraps
 from importlib.resources import files
 import json
+import base64
 import re
+import time
 from urllib.parse import parse_qs, unquote, urlsplit
-from uuid import uuid4
 
 from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from .capture import CaptureUnavailable, configured_bridge
@@ -93,6 +94,18 @@ def attach_session(session, bridge):
         ):
             raise CapabilityUnavailable("only audited GET requests are supported")
         try:
+            acquisition = bridge.acquire(endpoint, request)
+            if acquisition['state']=='complete':
+                import requests
+                response = requests.Response()
+                response.status_code = acquisition['http_status']
+                response._content = base64.b64decode(acquisition['body_base64'], validate=True)
+                receipt = dict(capture_id=acquisition['capture_id'],stale=False,received_at=acquisition['received_at'],representation='requests-decoded-content')
+                record_receipt(receipt)
+                session._temporaldb_last_receipt = receipt
+                return response
+            started = datetime.now(timezone.utc).isoformat()
+            clock = time.monotonic()
             # Redirects are retained and rejected by the SDK, never followed with credentials.
             response = original(prepared, **dict(kwargs, allow_redirects=False))
             if response.status_code == 304:
@@ -101,13 +114,18 @@ def attach_session(session, bridge):
             body = response.content
             received_at = datetime.now(timezone.utc).isoformat()
             metadata = dict(
-                capture_id=str(uuid4()),
+                capture_id=acquisition["acquisition_id"],
+                acquisition_id=acquisition["acquisition_id"],
                 provider="eodhd",
                 endpoint=endpoint,
                 request=request,
                 http_status=response.status_code,
                 received_at=received_at,
                 representation="requests-decoded-content",
+                request_started_at=started,
+                request_duration_ms=(time.monotonic() - clock) * 1000,
+                adapter_version="openbq-eodhd-capture:2",
+                response_headers={k.lower(): v for k, v in response.headers.items() if k.lower() in {"content-type", "content-length", "content-encoding", "date", "etag", "last-modified", "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset"}},
             )
             ack = bridge.retain(metadata, body)
             receipt = dict(
