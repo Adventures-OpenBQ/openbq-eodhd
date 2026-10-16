@@ -5,7 +5,8 @@
 
 Every HTTP call in this extension goes through the official `eodhd` package
 (`APIClient`) — https://github.com/EodHistoricalData/EODHD-APIs-Python-Financial-Library.
-The dependency is pinned to a GitHub commit because the PyPI release (1.0.32)
+It is vendored (openbq_eodhd/_vendor/eodhd, upstream commit f98e69d) because
+PyPI rejects direct-URL dependencies and the PyPI release (1.0.32)
 predates the SDK's typed errors (it can sys.exit() on API errors), request
 timeouts, and the fundamentals `filter` parameter.
 """
@@ -22,7 +23,7 @@ def get_client(credentials: dict[str, str] | None):
     if not api_key:
         raise UnauthorizedError("Missing EODHD credential. Set EODHD_API_KEY.")
     # pylint: disable=import-outside-toplevel
-    from eodhd import APIClient
+    from openbq_eodhd._vendor.eodhd import APIClient
 
     try:
         client = APIClient(api_key)
@@ -44,8 +45,8 @@ def apply_openbb_http_settings(client) -> None:
     were silently ignored for ``provider="eodhd"`` alone.
 
     ``_session`` and ``_timeout`` are SDK internals. That is tolerable here in
-    a way core internals are not: the SDK is pinned to an exact commit, so it
-    cannot drift underneath us without someone editing the pin. ``tests/
+    a way core internals are not: the SDK is vendored at an exact commit, so it
+    cannot drift underneath us without someone re-vendoring it. ``tests/
     test_client.py`` asserts both attributes still exist, so moving the pin
     fails CI rather than quietly reverting to unconfigured HTTP.
 
@@ -116,7 +117,7 @@ def rest_json(client, endpoint: str, params: dict) -> "object":
     through `raise_sdk_error` like any other SDK call.
     """
     # pylint: disable=import-outside-toplevel
-    from eodhd.APIs.BaseAPI import BaseAPI
+    from openbq_eodhd._vendor.eodhd.APIs.BaseAPI import BaseAPI
 
     api = BaseAPI(
         session=getattr(client, "_session", None),

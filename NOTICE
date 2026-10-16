@@ -11,5 +11,11 @@ with Claude co-author trailers. Renamed openbq-eodhd (module openbq_eodhd) for
 Adventures-OpenBQ; the OpenBB provider name `eodhd`, its core extension `eodhd`
 (obb.eodhd.*, /api/v1/eodhd) and the widget ids `eodhd_*_eodhd_obb` are unchanged.
 
-It uses the official EODHD Python library (EOD Historical Data, MIT per its PyPI
-metadata), pinned to a GitHub commit in pyproject.toml; it is not stored here.
+This package includes a vendored copy of the official EODHD Python library
+(EODHD-APIs-Python-Financial-Library), Copyright (c) 2021 Michael Whittle,
+licensed under the MIT License (see openbq_eodhd/_vendor/eodhd/LICENSE).
+Source: https://github.com/EodHistoricalData/EODHD-APIs-Python-Financial-Library
+at commit f98e69d797140ca03f16fa7451046d84aab9643e. Only apiclient.py,
+errors.py and APIs/ are included; absolute `eodhd.` imports were rewritten to
+`openbq_eodhd._vendor.eodhd.` and the package __init__ was trimmed to the REST
+client and its error types. No other changes.
