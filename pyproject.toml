@@ -14,10 +14,14 @@ requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
     "openbb-core>=2.0.1,<3",
-    # Official EODHD SDK, pinned to a GitHub commit (main, 2026-07-28): the
-    # PyPI release (1.0.32) predates the SDK's typed errors (it can sys.exit()
-    # on API errors), request timeouts, and the fundamentals `filter` param.
-    "eodhd @ https://github.com/EodHistoricalData/EODHD-APIs-Python-Financial-Library/archive/f98e69d797140ca03f16fa7451046d84aab9643e.tar.gz",
+    # Runtime deps of the official EODHD SDK, which is vendored under
+    # openbq_eodhd/_vendor/eodhd at upstream commit f98e69d (see NOTICE):
+    # PyPI rejects direct-URL dependencies, and PyPI's `eodhd` (1.0.32)
+    # predates the typed errors, request timeouts and fundamentals `filter`.
+    "numpy>=1.25.2",
+    "pandas>=2.1.0",
+    "requests>=2.31.0",
+    "rich>=13.5.2",
 ]
 
 # Registers the `eodhd` provider with OpenBB's plugin system.
@@ -33,7 +37,7 @@ eodhd = "openbq_eodhd.eodhd_router:router"
 include = ["openbq_eodhd*"]
 
 [tool.setuptools.package-data]
-openbq_eodhd = ["assets/*.json"]
+openbq_eodhd = ["assets/*.json", "_vendor/eodhd/LICENSE"]
 
 [project.optional-dependencies]
 dev = ["ruff==0.15.22", "pytest"]
@@ -41,7 +45,7 @@ dev = ["ruff==0.15.22", "pytest"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-exclude = [".git", "__pycache__", "*.egg-info", "build", "dist", "tests/__pycache__"]
+exclude = [".git", "__pycache__", "*.egg-info", "build", "dist", "tests/__pycache__", "openbq_eodhd/_vendor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

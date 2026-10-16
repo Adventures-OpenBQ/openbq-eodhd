@@ -11,7 +11,7 @@ for historical equity/ETF pricing.
 
 All API calls go through the official
 [EODHD Python library](https://github.com/EodHistoricalData/EODHD-APIs-Python-Financial-Library)
-(`eodhd.APIClient`), pinned to a GitHub commit — the PyPI release (1.0.32)
+(`eodhd.APIClient`), vendored at upstream commit f98e69d — the PyPI release (1.0.32)
 predates the SDK's typed errors, request timeouts, and the fundamentals
 `filter` parameter.
 
