@@ -6,6 +6,7 @@
 Samples are trimmed live responses recorded 2026-09-01 with the account key.
 """
 
+import asyncio
 from datetime import date
 from unittest.mock import MagicMock, patch
 
@@ -380,3 +381,35 @@ class TestTrailingDivYield:
         rows = EODHDTrailingDivYieldFetcher.transform_data(q, data)
         assert len(rows) == 1 and rows[0].date == date(2026, 8, 31)
         assert rows[0].trailing_dividend_yield == 0.0
+
+    def test_yield_is_split_only_and_continuous_across_a_split(self):
+        """O2: /div values are split-adjusted to today and adjusted_close is
+        also dividend-adjusted, so the yield puts both sides on a split-only
+        basis from /splits. A flat $100 stock (raw $400 before a 4:1 split)
+        paying $1.50 a quarter (split-adjusted) reads 6.00% on both sides."""
+        q = EODHDTrailingDivYieldQueryParams(symbol="AAPL", limit=2)
+        data = {
+            "dividends": [{"date": d, "value": 1.5} for d in ("2025-08-11", "2025-11-10", "2026-02-10", "2026-05-11")],
+            "splits": [{"date": "2026-06-01", "split": "4.000000/1.000000"}],
+            "prices": [  # adjusted_close carries a dividend gap and must not be used
+                {"date": "2026-05-29", "close": 400.0, "adjusted_close": 94.2},
+                {"date": "2026-06-01", "close": 100.0, "adjusted_close": 98.5},
+            ],
+        }
+        before, after = EODHDTrailingDivYieldFetcher.transform_data(q, data)
+        assert before.trailing_dividend_yield == pytest.approx(0.06)
+        assert after.trailing_dividend_yield == pytest.approx(0.06)
+
+    def test_a_failed_split_fetch_fails_the_call(self, monkeypatch, eodhd_credentials):
+        """No silently wrong yield: a /splits error maps like any SDK error."""
+        from openbb_core.app.model.abstract.error import OpenBBError
+
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.get_historical_dividends_data.return_value = []
+        client.get_eod_historical_stock_market_data.return_value = [{"date": "2026-08-31", "close": 1.0}]
+        client.get_historical_splits_data.side_effect = RuntimeError("splits down")
+        monkeypatch.setattr("openbq_eodhd.models._client.get_client", lambda credentials: client)
+        q = EODHDTrailingDivYieldQueryParams(symbol="AAPL", limit=1)
+        with pytest.raises(OpenBBError, match="splits down"):
+            asyncio.run(EODHDTrailingDivYieldFetcher.aextract_data(q, eodhd_credentials))

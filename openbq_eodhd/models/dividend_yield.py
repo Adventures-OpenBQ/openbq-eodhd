@@ -5,9 +5,13 @@
 
 EODHD has no trailing-yield endpoint, so this derives it the way tiingo's
 provider defines the model: for each of the last `limit` trading days,
-trailing 12-month dividends per share divided by that day's close. Two
-dedicated calls per request (dividends + EOD closes); both are cheap
-single-credit endpoints and the series is date-windowed to the limit.
+trailing 12-month dividends per share divided by that day's close, both on
+that day's share basis. /div values are split-adjusted to today and
+adjusted_close is dividend-adjusted too, so neither is used as is: the raw
+close is kept and the dividends are scaled by F(d), the product of the split
+ratios dated after d (from /splits). Three dedicated calls per request
+(dividends, splits, EOD closes); all are cheap single-credit endpoints and the
+series is date-windowed to the limit.
 """
 
 from datetime import date as dateType, timedelta
@@ -17,7 +21,7 @@ from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.trailing_dividend_yield import (
     TrailingDivYieldData, TrailingDivYieldQueryParams,
 )
-from openbb_core.provider.utils.errors import EmptyDataError
+from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 from pydantic import Field
 
 from openbq_eodhd.models._client import sdk_call
@@ -61,17 +65,20 @@ class EODHDTrailingDivYieldFetcher(
                 dividends = c.get_historical_dividends_data(
                     ticker=sym, date_from=str(div_from)
                 )
+                splits = c.get_historical_splits_data(ticker=sym, date_from=str(price_from))
                 prices = c.get_eod_historical_stock_market_data(
                     symbol=sym, period="d", from_date=str(price_from),
                     to_date=str(today), order="a",
                 )
-                return {"dividends": dividends, "prices": prices}
+                return {"dividends": dividends, "splits": splits, "prices": prices}
 
             out = sdk_call(credentials, _call, f"trailing yield for '{sym}'")
             if isinstance(out["prices"], dict) or not out["prices"]:
                 raise EmptyDataError(f"EODHD returned no prices for '{sym}'.")
             if isinstance(out["dividends"], dict):
                 out["dividends"] = []
+            if isinstance(out["splits"], dict):  # a wrong yield is worse than none
+                raise UnauthorizedError(f"EODHD ({sym}): splits: {out['splits'].get('message') or out['splits']}")
             return out
 
         return await to_thread(_sync)
@@ -90,12 +97,27 @@ class EODHDTrailingDivYieldFetcher(
             if d is not None and value is not None:
                 dividends.append((d, float(value)))
 
+        splits: list[tuple[dateType, float]] = []
+        for it in data.get("splits") or []:
+            num, _, den = str(it.get("split", "")).partition("/")
+            d = _d(it.get("date"))
+            try:
+                ratio = float(num) / (float(den) if den and float(den) else 1.0)
+            except ValueError:
+                continue
+            if d is not None and ratio > 0:
+                splits.append((d, ratio))
+
         rows = []
         for bar in data["prices"]:
             d, close = _d(bar.get("date")), bar.get("close")
             if d is None or not close:
                 continue
-            ttm = sum(v for dd, v in dividends if d - timedelta(days=365) < dd <= d)
+            factor = 1.0  # F(d->today): today's shares per share held on d
+            for sd, ratio in splits:
+                if sd > d:
+                    factor *= ratio
+            ttm = factor * sum(v for dd, v in dividends if d - timedelta(days=365) < dd <= d)
             rows.append(EODHDTrailingDivYieldData.model_validate({
                 "date": d,
                 "trailing_dividend_yield": ttm / float(close),

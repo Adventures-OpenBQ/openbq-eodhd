@@ -41,7 +41,7 @@ include = ["openbq_eodhd*"]
 openbq_eodhd = ["assets/*.json", "_vendor/eodhd/LICENSE"]
 
 [project.optional-dependencies]
-dev = ["ruff==0.15.22", "pytest"]
+dev = ["ruff==0.15.22", "pytest", "httpx2"]  # httpx2: Starlette TestClient
 
 [tool.ruff]
 target-version = "py310"
