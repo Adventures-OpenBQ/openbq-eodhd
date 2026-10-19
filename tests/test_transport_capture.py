@@ -160,7 +160,7 @@ def test_eodhd_sdk_and_obbject_projection_keep_retained_body_and_receipt(monkeyp
     from openbq_eodhd import eodhd_provider
     from openbq_eodhd.models import _client
     from openbb_core.app.model.obbject import OBBject
-    from eodhd import APIClient
+    from openbq_eodhd._vendor.eodhd import APIClient
 
     shared = bridge()
     monkeypatch.setattr(module, "configured_bridge", lambda: shared)
@@ -173,7 +173,7 @@ def test_eodhd_sdk_and_obbject_projection_keep_retained_body_and_receipt(monkeyp
     )
     client._session.mount("https://", adapter)
     monkeypatch.setattr(_client, "apply_openbb_http_settings", lambda c: None)
-    import eodhd
+    from openbq_eodhd._vendor import eodhd
 
     monkeypatch.setattr(eodhd, "APIClient", lambda key: client)
 
@@ -227,8 +227,8 @@ def test_managed_fundamentals_does_not_recertify_l1_freshness(monkeypatch):
 
 def test_pinned_sdk_nested_calls_and_explicit_retry_retain_individual_evidence():
     module = implementation()
-    from eodhd import APIClient
-    from eodhd.errors import EODHDHTTPError
+    from openbq_eodhd._vendor.eodhd import APIClient
+    from openbq_eodhd._vendor.eodhd.errors import EODHDHTTPError
 
     shared = bridge()
     client = APIClient("demo")

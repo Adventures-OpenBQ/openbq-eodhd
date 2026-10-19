@@ -248,7 +248,7 @@ def test_capture_credentials_are_never_forwarded_through_redirects(bridge_server
 def test_pinned_sdk_response_hook_observes_bytes_before_json_and_typed_errors(
     bridge_server, monkeypatch, body, status
 ):
-    from eodhd import APIClient
+    from openbq_eodhd._vendor.eodhd import APIClient
 
     C = implementation()
     state, url = bridge_server
