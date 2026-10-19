@@ -38,7 +38,7 @@ eodhd = "openbq_eodhd.eodhd_router:router"
 include = ["openbq_eodhd*"]
 
 [tool.setuptools.package-data]
-openbq_eodhd = ["assets/*.json", "_vendor/eodhd/LICENSE"]
+openbq_eodhd = ["assets/*.json", "endpoint_manifest.json", "_vendor/eodhd/LICENSE"]
 
 [project.optional-dependencies]
 dev = ["ruff==0.15.22", "pytest", "httpx2"]  # httpx2: Starlette TestClient
