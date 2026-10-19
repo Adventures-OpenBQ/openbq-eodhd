@@ -299,3 +299,26 @@ def test_configured_account_is_asserted_before_acquisition():
     value._call=call
     value.acquire('value',{})
     assert calls[0]['metadata']['expected_account']=='trusted'
+
+
+@pytest.mark.parametrize(("status", "expected"), [(402, "request limit"), (401, "verify EODHD_API_KEY")])
+def test_managed_fundamentals_keep_the_9_0_1_error_mapping(monkeypatch, status, expected):
+    implementation()
+    from openbb_core.provider.utils.errors import UnauthorizedError
+    from openbq_eodhd import capture
+    from openbq_eodhd.models import _fundamentals as fundamentals
+
+    class Client:
+        _session = type("Session", (), {"_temporaldb_capture": True})()
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def get_fundamentals_data(self, sym):
+            raise type("EODHDHTTPError", (Exception,), {"status_code": status})("HTTP error")
+
+    monkeypatch.setattr(capture, "configured_bridge", lambda: bridge())
+    monkeypatch.setattr(capture, "managed_credentials", lambda credentials: credentials)
+    monkeypatch.setattr(fundamentals, "get_client", lambda credentials: Client())
+    with pytest.raises(UnauthorizedError, match=expected):
+        fundamentals._read_through_sync("TEST.US", {"eodhd_api_key": "fixture"})
