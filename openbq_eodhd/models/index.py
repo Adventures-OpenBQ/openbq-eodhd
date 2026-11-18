@@ -14,6 +14,9 @@ from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.available_indices import (
     AvailableIndicesData, AvailableIndicesQueryParams,
 )
+from openbb_core.provider.standard_models.index_constituents import (
+    IndexConstituentsData, IndexConstituentsQueryParams,
+)
 from openbb_core.provider.standard_models.index_historical import (
     IndexHistoricalData, IndexHistoricalQueryParams,
 )
@@ -139,3 +142,75 @@ class EODHDIndexHistoricalFetcher(
     def transform_data(query, data: list[dict], **kwargs) -> list[EODHDIndexHistoricalData]:  # pylint: disable=unused-argument
         rows = rows_from_bars(query.interval, "," in query.symbol, data)
         return [EODHDIndexHistoricalData.model_validate(r) for r in rows]
+
+
+class EODHDIndexConstituentsQueryParams(IndexConstituentsQueryParams):
+    """EODHD Index Constituents Query. `symbol` is an index code such as GSPC or GSPC.INDX."""
+
+
+class EODHDIndexConstituentsData(IndexConstituentsData):
+    """EODHD Index Constituents Data."""
+
+    exchange: str | None = Field(default=None, description="EODHD exchange code of the member.")
+    sector: str | None = Field(default=None, description="Sector of the member.")
+    industry: str | None = Field(default=None, description="Industry of the member.")
+    weight: float | None = Field(
+        default=None,
+        description="Weight in the index, as a normalized percent.",
+        json_schema_extra={"x-unit_measurement": "percent", "x-frontend_multiply": 100},
+    )
+
+
+class EODHDIndexConstituentsFetcher(
+    Fetcher[EODHDIndexConstituentsQueryParams, list[EODHDIndexConstituentsData]]
+):
+    """EODHD current index constituents, from the index's fundamentals `Components`.
+
+    Included in the core plans; the dated S&P history is the separate
+    marketplace product (/mp/unicornbay/spglobal).
+    """
+
+    @staticmethod
+    def transform_query(params: dict[str, Any]) -> EODHDIndexConstituentsQueryParams:
+        return EODHDIndexConstituentsQueryParams(**params)
+
+    @staticmethod
+    async def aextract_data(query, credentials, **kwargs) -> dict:  # pylint: disable=unused-argument
+        from asyncio import to_thread
+
+        from openbq_eodhd.models._client import rest_json
+
+        code = query.symbol.split(",")[0].strip().upper().lstrip("^")
+        code = code if code.endswith(".INDX") else f"{code.split('.')[0]}.INDX"
+
+        def _sync():
+            resp = sdk_call(
+                credentials,
+                lambda c: rest_json(c, f"fundamentals/{code}", {"filter": "Components"}),
+                "index constituents",
+            )
+            if not resp or not isinstance(resp, dict):
+                raise EmptyDataError(f"EODHD lists no constituents for {code}.")
+            return resp
+
+        return await to_thread(_sync)
+
+    @staticmethod
+    def transform_data(query, data: dict, **kwargs):  # pylint: disable=unused-argument
+        # `filter=Components` answers the section itself; tolerate the full document too.
+        members = data.get("Components", data)
+        rows = []
+        for it in members.values() if isinstance(members, dict) else members:
+            if not isinstance(it, dict) or not it.get("Code"):
+                continue
+            rows.append(EODHDIndexConstituentsData.model_validate({
+                "symbol": f"{it['Code']}.{it['Exchange']}" if it.get("Exchange") else it["Code"],
+                "name": it.get("Name"),
+                "exchange": it.get("Exchange"),
+                "sector": it.get("Sector"),
+                "industry": it.get("Industry"),
+                "weight": it.get("Weight"),
+            }))
+        if not rows:
+            raise EmptyDataError("EODHD returned no usable index constituents.")
+        return sorted(rows, key=lambda r: -(r.weight or 0))

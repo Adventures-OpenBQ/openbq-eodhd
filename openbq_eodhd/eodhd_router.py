@@ -94,6 +94,22 @@ MIRRORS: dict[str, tuple[str, str]] = {
     "CompanyNews": ("/news/company", "News"),
     "TreasuryRates": ("/fixedincome/government/treasury_rates", "Government"),
     "YieldCurve": ("/fixedincome/government/yield_curve", "Government"),
+    "TipsYields": ("/fixedincome/government/tips_yields", "Government"),
+    "SOFR": ("/fixedincome/rate/sofr", "Rates"),
+    "FederalFundsRate": ("/fixedincome/rate/effr", "Rates"),
+    "OvernightBankFundingRate": ("/fixedincome/rate/overnight_bank_funding", "Rates"),
+    "SONIA": ("/fixedincome/rate/sonia", "Rates"),
+    "EuroShortTermRate": ("/fixedincome/rate/estr", "Rates"),
+    "EuropeanCentralBankInterestRates": ("/fixedincome/rate/ecb", "Rates"),
+    "HighQualityMarketCorporateBond": ("/fixedincome/corporate/hqm", "Credit"),
+    "RiskPremium": ("/economy/risk_premium", "Credit"),
+    "HousePriceIndex": ("/economy/house_price_index", "Macro"),
+    "CommoditySpotPrices": ("/commodity/price/spot", "Price"),
+    "CompanyFilings": ("/equity/fundamental/filings", "Fundamental"),
+    "RevenueBusinessLine": ("/equity/fundamental/revenue_per_segment", "Fundamental"),
+    "RevenueGeographic": ("/equity/fundamental/revenue_per_geography", "Fundamental"),
+    "IndexConstituents": ("/index/constituents", "Reference"),
+    "OptionsChains": ("/derivatives/options/chains", "Options"),
 }
 
 router = Router(prefix="", description="EODHD provider namespace (obb.eodhd.*).")
