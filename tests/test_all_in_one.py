@@ -1,7 +1,7 @@
 # Copyright 2026 SecretoftheUniverse.com LLC. Licensed under the Apache License, Version 2.0.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The All-In-One endpoints wired after 9.0.1: rates, credit risk, SEC filings
+"""The All-In-One endpoints added in 9.1.0: rates, credit risk, SEC filings
 and segments, commodities, house prices, index constituents, real yields and
 the options chain.
 

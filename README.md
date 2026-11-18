@@ -58,7 +58,7 @@ predates the SDK's typed errors, request timeouts, and the fundamentals
 
 ### Rates, credit, filings and the other All-In-One endpoints
 
-Wired after 9.0.1. Each row is an OpenBB standard model, so each has an
+Added in 9.1.0. Each row is an OpenBB standard model, so each has an
 `obb.eodhd.*` mirror; all but the options chain are included in EODHD's
 All-In-One plan.
 

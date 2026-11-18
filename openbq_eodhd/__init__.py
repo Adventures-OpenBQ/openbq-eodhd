@@ -254,7 +254,7 @@ eodhd_provider = Provider(
         "ConsumerPriceIndex": EODHDConsumerPriceIndexFetcher,
         "Unemployment": EODHDUnemploymentFetcher,
         "CountryProfile": EODHDCountryProfileFetcher,
-        # All-In-One endpoints wired after 9.0.1 (OptionsChains needs the
+        # All-In-One endpoints added in 9.1.0 (OptionsChains needs the
         # US Stock Options marketplace subscription).
         "CompanyFilings": EODHDCompanyFilingsFetcher,
         "RevenueBusinessLine": EODHDRevenueBusinessLineFetcher,
