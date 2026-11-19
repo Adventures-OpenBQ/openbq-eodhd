@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from datetime import date
+from math import nextafter
+
+import pytest
 
 from openbq_eodhd.models.earnings_vs_estimates import (
     EODHDEarningsVsEstimatesData as D,
@@ -92,6 +95,20 @@ def test_band_check_edges():
     assert band_check(None, 1.0, False) == ("no_estimate", None)
     assert band_check(1.0999, 1.0, True)[0] == "ok"
     assert band_check(1.1001, 1.0, True)[0] == "withheld"
+    assert band_check(-1.1001, -1.0, True)[0] == "withheld"
+
+
+@pytest.mark.parametrize(
+    ("estimate", "consensus"),
+    [(1.10, 1.00), (0.90, 1.00), (-1.10, -1.00), (-0.90, -1.00)],
+)
+def test_band_check_includes_exact_ten_percent_boundary(estimate, consensus):
+    assert band_check(estimate, consensus, True) == ("ok", None)
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_band_check_withholds_just_beyond_ten_percent_boundary(sign):
+    assert band_check(sign * nextafter(1.10, 2.0), sign * 1.00, True)[0] == "withheld"
 
 
 def test_rows_are_reported_quarters_ascending():

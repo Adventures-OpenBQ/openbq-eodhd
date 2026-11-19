@@ -5,6 +5,7 @@
 
 import calendar
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from openbb_core.provider.abstract.data import Data
@@ -16,7 +17,7 @@ from openbq_eodhd.models import _fundamentals as F
 from openbq_eodhd.models.estimates import _date, _f, _i
 
 _MONTHS = {m: i for i, m in enumerate(calendar.month_name) if m}
-_TOLERANCE = 0.10  # EODHD's Trend range is trusted only within 10% of its own consensus
+_TOLERANCE = Decimal("0.10")
 _NO_CONSENSUS = (
     "EODHD recorded no consensus for this quarter, so its estimate range can't be checked; "
     "range withheld."
@@ -41,7 +42,14 @@ def band_check(
         return "no_estimate", None
     if not eps_consensus:
         return "withheld", _NO_CONSENSUS
-    if abs(eps_avg - eps_consensus) / abs(eps_consensus) <= _TOLERANCE:
+    # Compare the reported decimals so a nominal 10% difference stays within the band.
+    estimate = Decimal(str(eps_avg))
+    consensus = Decimal(str(eps_consensus))
+    if (
+        estimate.is_finite()
+        and consensus.is_finite()
+        and abs(estimate - consensus) <= abs(consensus) * _TOLERANCE
+    ):
         return "ok", None
     return "withheld", (
         "EODHD's estimate range for this quarter doesn't match its recorded consensus "
