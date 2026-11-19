@@ -156,7 +156,7 @@ def test_l2_unavailable_falls_back_to_live_fetch(monkeypatch):
 
 
 EARNINGS = {"History": {}, "Trend": {"Quarterly": {}, "Annual": {}}, "Annual": {}}
-CREDS = {"eodhd_api_key": "PLACEHOLDER.TEST"}
+CREDS = {"eodhd_api_key": "EXAMPLE_TEST_TOKEN"}
 
 
 def _stub_rest(monkeypatch, payload):
