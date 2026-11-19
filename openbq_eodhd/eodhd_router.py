@@ -22,7 +22,8 @@ here anyway.
 
 A line whose fetcher_dict lacks a key simply generates no mirror for it, which
 is what keeps this file byte-identical across the release lines. A non-standard
-key (v12's EquityTicks) has no row and so no mirror.
+key has no row and so no mirror (v12's EquityTicks), except EarningsVsEstimates,
+which has one by design: its eodhd-only route is the command.
 """
 
 import json
@@ -67,6 +68,7 @@ MIRRORS: dict[str, tuple[str, str]] = {
     "AnalystEstimates": ("/equity/estimates/historical", "Estimates"),
     "ForwardEpsEstimates": ("/equity/estimates/forward_eps", "Estimates"),
     "PriceTargetConsensus": ("/equity/estimates/consensus", "Estimates"),
+    "EarningsVsEstimates": ("/equity/estimates/earnings_vs_estimates", "Estimates"),
     "CalendarEarnings": ("/equity/calendar/earnings", "Calendar"),
     "CalendarIpo": ("/equity/calendar/ipo", "Calendar"),
     "CalendarSplits": ("/equity/calendar/splits", "Calendar"),

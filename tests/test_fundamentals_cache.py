@@ -153,3 +153,58 @@ def test_l2_unavailable_falls_back_to_live_fetch(monkeypatch):
     # _l2_get / _l2_put must swallow the missing library rather than raise
     assert F._l2_get("AAPL.US") is None
     F._l2_put("AAPL.US", BUNDLE)  # no exception
+
+
+EARNINGS = {"History": {}, "Trend": {"Quarterly": {}, "Annual": {}}, "Annual": {}}
+CREDS = {"eodhd_api_key": "PLACEHOLDER.TEST"}
+
+
+def _stub_rest(monkeypatch, payload):
+    from openbq_eodhd._vendor.eodhd.APIs.BaseAPI import BaseAPI
+
+    calls = []
+
+    def fake_rest_get(api, *, api_key, endpoint, querystring):
+        calls.append((endpoint, querystring))
+        return payload
+
+    monkeypatch.setattr(BaseAPI, "_rest_get_method", fake_rest_get)
+    monkeypatch.setattr(F, "_l2_get", lambda key: None)
+    monkeypatch.setattr(F, "_l2_put", lambda key, b: None)
+    return calls
+
+
+def test_earnings_v11_requests_the_v11_path_with_earnings_filter(monkeypatch):
+    calls = _stub_rest(monkeypatch, EARNINGS)
+    assert asyncio.run(F.get_earnings_v11("AAPL", "US", CREDS)) == EARNINGS
+    assert calls == [("v1.1/fundamentals/AAPL.US", "&filter=Earnings")]
+
+
+def test_earnings_v11_is_cached_apart_from_the_bundle(monkeypatch):
+    calls = _stub_rest(monkeypatch, EARNINGS)
+    l2 = {}
+    monkeypatch.setattr(F, "_l2_get", l2.get)
+    monkeypatch.setattr(F, "_l2_put", l2.__setitem__)
+    monkeypatch.setattr(F, "_fetch_sync", lambda symbol, credentials: BUNDLE)
+
+    async def go():
+        assert await F.get_bundle("AAPL", "US", CREDS) == BUNDLE
+        assert await F.get_earnings_v11("AAPL", "US", CREDS) == EARNINGS
+        assert await F.get_earnings_v11("AAPL", "US", CREDS) == EARNINGS
+
+    asyncio.run(go())
+    assert len(calls) == 1
+    assert set(F._cache) == {"AAPL.US", "AAPL.US#earnings-v1.1"}
+    assert l2 == {"AAPL.US": BUNDLE, "AAPL.US#earnings-v1.1": EARNINGS}
+
+    F._reset_cache_for_tests()
+    asyncio.run(go())
+    assert len(calls) == 1
+
+
+def test_earnings_v11_empty_response_raises(monkeypatch):
+    from openbb_core.provider.utils.errors import EmptyDataError
+
+    _stub_rest(monkeypatch, {})
+    with pytest.raises(EmptyDataError):
+        asyncio.run(F.get_earnings_v11("AAPL", "US", CREDS))

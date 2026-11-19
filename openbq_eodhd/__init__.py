@@ -30,6 +30,7 @@ from openbq_eodhd.models.etf import (
     EODHDEtfInfoFetcher,
     EODHDEtfSectorsFetcher,
 )
+from openbq_eodhd.models.earnings_vs_estimates import EODHDEarningsVsEstimatesFetcher
 from openbq_eodhd.models.estimates import (
     EODHDAnalystEstimatesFetcher,
     EODHDForwardEpsEstimatesFetcher,
@@ -100,6 +101,7 @@ __all__ = [
     "EODHDHistoricalEpsFetcher",
     "EODHDAnalystEstimatesFetcher",
     "EODHDForwardEpsEstimatesFetcher",
+    "EODHDEarningsVsEstimatesFetcher",
     "EODHDPriceTargetConsensusFetcher",
     "EODHDCalendarEarningsFetcher",
     "EODHDCalendarIpoFetcher",
@@ -176,6 +178,7 @@ eodhd_provider = Provider(
         "AnalystEstimates": EODHDAnalystEstimatesFetcher,
         "ForwardEpsEstimates": EODHDForwardEpsEstimatesFetcher,
         "PriceTargetConsensus": EODHDPriceTargetConsensusFetcher,
+        "EarningsVsEstimates": EODHDEarningsVsEstimatesFetcher,  # non-standard: eodhd-only route
         "CalendarEarnings": EODHDCalendarEarningsFetcher,
         "CalendarIpo": EODHDCalendarIpoFetcher,
         "CalendarSplits": EODHDCalendarSplitsFetcher,

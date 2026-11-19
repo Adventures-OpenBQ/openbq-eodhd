@@ -14,7 +14,8 @@ from openbq_eodhd.eodhd_router import router
 
 # Routes on the eodhd router that are not standard-path mirrors.
 # /apps.json lands in Task 4; /ticks/fetch is the v12.4.13-only ticks alias.
-NON_MIRROR = {"/apps.json", "/ticks/fetch"}
+# earnings_vs_estimates has a MIRRORS row but no standard path: eodhd-only.
+NON_MIRROR = {"/apps.json", "/ticks/fetch", "/equity/estimates/earnings_vs_estimates"}
 
 
 def _standard_paths() -> dict[str, str]:
@@ -112,3 +113,18 @@ def test_standard_routes_are_loaded():
     # one of them passes by collecting nothing -- install the standard
     # extensions (CI: openbb[routers]==<Dockerfile OPENBB_VERSION>) so they check.
     assert ROUTABLE, "no standard routes loaded: install openbb, not just openbb-core"
+
+
+def test_earnings_vs_estimates_route():
+    path = "/equity/estimates/earnings_vs_estimates"
+    commands = CommandMap().commands_model
+    assert path not in commands
+    assert (
+        commands["/eodhd" + path] == "EodhdEarningsVsEstimates"
+    )
+    from openbb_core.api.rest_api import app as rest_app
+
+    op = rest_app.openapi()["paths"]["/api/v1/eodhd" + path]["get"]
+    prov = next(p for p in op["parameters"] if p["name"] == "provider")
+    schema = prov["schema"]
+    assert (schema.get("enum") or [schema.get("const")]) == ["eodhd"]

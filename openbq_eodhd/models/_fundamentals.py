@@ -22,10 +22,11 @@ from typing import Any
 from openbb_core.app.model.abstract.error import OpenBBError
 from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 
-from openbq_eodhd.models._client import get_client, raise_sdk_error
+from openbq_eodhd.models._client import get_client, raise_sdk_error, rest_json, sdk_call
 
 _TTL_SECONDS = 120.0            # L1 in-process burst-coalescing TTL
 _L2_LIBRARY = "eodhd_fundamentals_cache"
+_EARNINGS_V11_SUFFIX = "#earnings-v1.1"
 _cache: dict[str, tuple[float, dict]] = {}
 _locks: dict[str, Lock] = {}
 
@@ -130,33 +131,59 @@ def _l2_put(sym: str, bundle: dict) -> None:
         return
 
 
-def _read_through_sync(sym: str, credentials: dict[str, str] | None) -> dict:
-    """L2 get -> EODHD fetch -> L2 put. Runs in a worker thread."""
-    hit = _l2_get(sym)
+def _read_through_sync(key: str, fetch) -> dict:
+    """L2 get -> fetch() -> L2 put. Runs in a worker thread."""
+    hit = _l2_get(key)
     if hit is not None:
         return hit
-    bundle = _fetch_sync(sym, credentials)
-    _l2_put(sym, bundle)
-    return bundle
+    payload = fetch()
+    _l2_put(key, payload)
+    return payload
+
+
+async def _get_cached(key: str, fetch) -> dict:
+    """L1 -> single-flight lock -> L2/fetch, all under one cache key."""
+    cached = _cached(key)
+    if cached is not None:
+        return cached
+    async with _get_lock(key):
+        cached = _cached(key)  # another coroutine may have filled it while we waited
+        if cached is not None:
+            return cached
+        payload = await to_thread(_read_through_sync, key, fetch)
+        now = time.monotonic()
+        for k in [k for k, (exp, _) in list(_cache.items()) if exp <= now]:
+            _cache.pop(k, None)
+        _cache[key] = (now + _TTL_SECONDS, payload)
+        return payload
 
 
 async def get_bundle(
     symbol: str, exchange: str, credentials: dict[str, str] | None
 ) -> dict:
     sym = qualify(symbol, exchange)
-    cached = _cached(sym)
-    if cached is not None:
-        return cached
-    async with _get_lock(sym):
-        cached = _cached(sym)  # another coroutine may have filled it while we waited
-        if cached is not None:
-            return cached
-        payload = await to_thread(_read_through_sync, sym, credentials)
-        now = time.monotonic()
-        for k in [k for k, (exp, _) in list(_cache.items()) if exp <= now]:
-            _cache.pop(k, None)
-        _cache[sym] = (now + _TTL_SECONDS, payload)
-        return payload
+    return await _get_cached(sym, lambda: _fetch_sync(sym, credentials))
+
+
+def _fetch_earnings_v11_sync(sym: str, credentials: dict[str, str] | None) -> dict:
+    response = sdk_call(
+        credentials,
+        lambda c: rest_json(c, f"v1.1/fundamentals/{sym}", {"filter": "Earnings"}),
+        f"earnings for '{sym}'",
+    )
+    if not isinstance(response, dict) or not response:
+        raise EmptyDataError(f"EODHD returned no earnings for '{sym}'.")
+    return response
+
+
+async def get_earnings_v11(
+    symbol: str, exchange: str, credentials: dict[str, str] | None
+) -> dict:
+    """v1.1 `Earnings` object, cached apart from the bundle (own L1/L2 key)."""
+    sym = qualify(symbol, exchange)
+    return await _get_cached(
+        sym + _EARNINGS_V11_SUFFIX, lambda: _fetch_earnings_v11_sync(sym, credentials)
+    )
 
 
 def _rows(section: Any) -> list[dict]:

@@ -46,3 +46,8 @@ def test_phase4_macro_models_registered():
         "ConsumerPriceIndex", "Unemployment", "CountryProfile",
     ]:
         assert key in eodhd_provider.fetcher_dict, f"missing {key}"
+
+
+def test_earnings_vs_estimates_registered():
+    d = eodhd_provider.fetcher_dict
+    assert d["EodhdEarningsVsEstimates"] is d["EarningsVsEstimates"]
