@@ -195,3 +195,15 @@ def test_growth_is_unavailable_when_year_ago_value_is_zero():
     from openbq_eodhd.models.earnings_vs_estimates import _growth
 
     assert _growth(1.0, 0.0) is None
+
+
+@pytest.mark.parametrize("count", ["NaN", "Infinity", "-Infinity"])
+def test_unusable_optional_analyst_counts_preserve_reported_quarter(count):
+    end = "2026-06-30"
+    quarterly = EARNINGS["Trend"]["Quarterly"]
+    estimates = {**quarterly[end], "earningsEstimateNumberOfAnalysts": count,
+                 "revenueEstimateNumberOfAnalysts": count}
+    earnings = {**EARNINGS, "Trend": {"Quarterly": {end: estimates}}}
+    row = _rows(earnings)[date.fromisoformat(end)]
+    assert row.band_status == "ok" and row.eps_avg == 1.8924
+    assert row.eps_analysts is None and row.revenue_analysts is None

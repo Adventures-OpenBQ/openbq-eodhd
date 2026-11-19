@@ -3,6 +3,7 @@
 
 """EODHD earnings/estimates models from /fundamentals (History + Trend)."""
 
+from math import isfinite
 from typing import Any
 
 from openbb_core.provider.abstract.fetcher import Fetcher
@@ -40,7 +41,7 @@ def _f(v):
 
 def _i(v):
     f = _f(v)
-    return int(f) if f is not None else None
+    return int(f) if f is not None and isfinite(f) else None
 
 
 class EODHDHistoricalEpsQueryParams(HistoricalEpsQueryParams):
