@@ -11,6 +11,7 @@ predates the SDK's typed errors (it can sys.exit() on API errors), request
 timeouts, and the fundamentals `filter` parameter.
 """
 
+import re
 from typing import NoReturn
 
 from openbb_core.app.model.abstract.error import OpenBBError
@@ -77,19 +78,47 @@ def apply_openbb_http_settings(client) -> None:
         pass
 
 
+_API_TOKEN = re.compile(r"(api_token(?:=|%3[dD]))[^&%\s'\"]*")
+
+
+def _redact(text: str) -> str:
+    """Mask the key in upstream text: requests' connection and timeout errors
+    quote the full request URL, and the SDK puts the key in its query string,
+    which may arrive URL-encoded (api_token%3D<key>%26...)."""
+    return _API_TOKEN.sub(r"\1***", text)
+
+
 def raise_sdk_error(exc: Exception, context: str) -> NoReturn:
     """Map an official-SDK exception onto OpenBB's error types.
 
     Checked via the `status_code` attribute (EODHDHTTPError) rather than the
-    SDK's exception classes so `eodhd` stays a lazy import.
+    SDK's exception classes so `eodhd` stays a lazy import. OpenBB serves
+    UnauthorizedError as 502 and OpenBBError as 400, so an upstream failure
+    (5xx, unreachable, timed out) rides UnauthorizedError to get its 502.
+    Every branch raises `from None`: the original exception's text carries
+    the key, and a chained cause would print it in the API log's traceback.
     """
+    # pylint: disable=import-outside-toplevel
+    import requests
+
     status = getattr(exc, "status_code", None)
-    if status in (401, 402, 403):
+    if status in (402, 429):
+        raise UnauthorizedError(
+            f"EODHD {context}: HTTP {status} — EODHD request limit or plan"
+            " exhausted; retry later or check the plan's quota."
+        ) from None
+    if status in (401, 403):
         raise UnauthorizedError(
             f"EODHD {context}: HTTP {status} — verify EODHD_API_KEY is valid and"
             " the token/plan has access to this data."
-        ) from exc
-    raise OpenBBError(f"EODHD {context} failed: {exc}") from exc
+        ) from None
+    detail = _redact(str(exc))
+    unreachable = isinstance(exc, (requests.ConnectionError, requests.Timeout)) or (
+        type(exc).__name__ in ("EODHDConnectionError", "EODHDTimeoutError")
+    )
+    if unreachable or (isinstance(status, int) and status >= 500):
+        raise UnauthorizedError(f"EODHD {context}: upstream unavailable: {detail}") from None
+    raise OpenBBError(f"EODHD {context} failed: {detail}") from None
 
 
 def sdk_call(credentials: dict[str, str] | None, call, context: str):
