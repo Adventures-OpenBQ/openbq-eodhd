@@ -308,17 +308,18 @@ def _annotated_income(
     from openbq_eodhd.models._fundamentals import qualify
 
     bucket = acquisition.section.get("yearly" if query.period == "annual" else "quarterly")
-    if bucket is None:
-        raise EmptyDataError("The request was returned empty.")
     if not isinstance(bucket, dict):
         raise UnauthorizedError("EODHD (Income_Statement): expected an object of period records.")
-    entries = [(key, entry if isinstance(entry, dict) else {}) for key, entry in bucket.items()]
-    entries.sort(key=lambda item: str(item[1].get("date") or ""), reverse=True)
+    entries = [
+        (iso_date(key), entry if isinstance(entry, dict) else {}) for key, entry in bucket.items()
+    ]
+    # The bucket keys order the upstream periods. A malformed body must not
+    # move a known recent period below the requested limit.
+    entries.sort(key=lambda item: (item[0] is not None, item[0] or date.min), reverse=True)
     selected = entries[:query.limit] if query.limit else entries
-    available_dates = [iso_date(raw.get("date")) for _, raw in entries]
     fiscal_labels = {
         day: _chart_fiscal(day, query.period, acquisition.fiscal_year_end)
-        for day in available_dates if day is not None
+        for _, raw in selected if (day := iso_date(raw.get("date"))) is not None
     }
     mapped_lines = set(INCOME_MAP.values())
     origin_conflicts = {
@@ -327,7 +328,7 @@ def _annotated_income(
         and any(key not in INCOME_MAP and _snake(key) in mapped_lines for key in raw)
     }
     evidence = income_evidence(
-        acquisition.section, selected, available_dates, fiscal_labels,
+        acquisition.section, selected, entries, fiscal_labels,
         symbol=qualify(query.symbol, query.exchange),
         period_kind="FY" if query.period == "annual" else "FQ",
         limit=query.limit, retrieved_at=acquisition.retrieved_at,
@@ -365,18 +366,29 @@ class EODHDIncomeStatementFetcher(
         if not query.chart_source:
             return await _extract("Income_Statement", INCOME_MAP, query, credentials)
 
-        from openbq_eodhd.models._fundamentals import general, get_bundle
+        from openbq_eodhd.models._fundamentals import get_bundle
 
-        bundle = await get_bundle(query.symbol, query.exchange, credentials)
-        if bundle.get("error") or bundle.get("errors"):
+        try:
+            bundle = await get_bundle(query.symbol, query.exchange, credentials)
+        except EmptyDataError:
+            # The shared transport uses EmptyDataError for an empty or
+            # non-object fundamentals payload. Neither establishes a period bucket.
+            raise UnauthorizedError("EODHD (Income_Statement): expected a fundamentals object.") from None
+        if not isinstance(bundle, dict):
+            raise UnauthorizedError("EODHD (Income_Statement): expected a fundamentals object.")
+        if any(bundle.get(key) for key in ("error", "errors", "message")):
             raise UnauthorizedError("EODHD returned a fundamentals error.")
-        section = (bundle.get("Financials") or {}).get("Income_Statement")
-        if section is None:
-            raise EmptyDataError("The request was returned empty.")
+        financials = bundle.get("Financials")
+        if not isinstance(financials, dict):
+            raise UnauthorizedError("EODHD (Income_Statement): expected a Financials object.")
+        section = financials.get("Income_Statement")
         if not isinstance(section, dict):
             raise UnauthorizedError("EODHD (Income_Statement): expected a statement object.")
+        general = bundle.get("General")
+        if general is not None and not isinstance(general, dict):
+            raise UnauthorizedError("EODHD (Income_Statement): expected a General object.")
         return _IncomeAcquisition(
-            section, _fy_end_month(general(bundle).get("FiscalYearEnd")), utc_now(),
+            section, _fy_end_month((general or {}).get("FiscalYearEnd")), utc_now(),
         )
 
     @staticmethod

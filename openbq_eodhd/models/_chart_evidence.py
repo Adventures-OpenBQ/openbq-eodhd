@@ -494,8 +494,8 @@ def dividend_evidence(
 
 def income_evidence(
     section: dict,
-    selected: list[tuple[str, dict]],
-    available_dates: list[date | None],
+    selected: list[tuple[date | None, dict]],
+    available: list[tuple[date | None, dict]],
     fiscal_labels: dict[date, tuple[int | None, FiscalPeriod | None]],
     *,
     symbol: str,
@@ -526,7 +526,11 @@ def income_evidence(
         diagnostics.add("scale_conflict")
 
     source_fields = IncomeFieldOrigins().model_dump(exclude={"period_ending", "reporting_currency"})
-    date_counts = Counter(available_dates)
+    date_counts = Counter(iso_date(raw.get("date")) for _, raw in available)
+    if any(key is None for key, _ in available):
+        # These periods could precede the selected prefix even if none
+        # survived the limit, so the latest selection cannot be certified.
+        diagnostics.add("invalid_period_identity")
     periods = []
     seen = set()
     for key, raw in selected:
@@ -546,7 +550,7 @@ def income_evidence(
         scale_conflict = bool(snapshot_scale and "scale_multiplier" in raw and
                               finite_number(raw["scale_multiplier"]) != snapshot_scale.multiplier)
         identity_conflict = (
-            iso_date(key) != day or date_counts[day] > 1
+            key != day or date_counts[day] > 1
             or bool({"period_ending", "fiscal_year", "fiscal_period"} & raw.keys())
         )
         full_record = (
@@ -576,7 +580,7 @@ def income_evidence(
     return IncomeEvidence(
         retrieved_at=retrieved_at, raw_count=len(selected), diagnostics=sorted(diagnostics),
         qualified_symbol=symbol, period_kind=period_kind, reporting_currency=reporting_currency,
-        scale=scale, requested_limit=limit, available_period_count=len(available_dates),
+        scale=scale, requested_limit=limit, available_period_count=len(available),
         unsafe=IncomeUnsafe(
             invalid_period_identity="invalid_period_identity" in diagnostics,
             scale_conflict=block_scale_conflict,

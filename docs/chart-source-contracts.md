@@ -93,6 +93,10 @@ with each supplied per-period declaration checked for disagreement.
 `General.CurrencyCode` is the quote currency and gets no say in the
 statement's currency. [EODHD statement structure and currency](https://course.eodhd.com/lessons/co-statements-inside-the-payload)
 
+An explicitly empty `yearly` or `quarterly` object returns an empty
+opted-in result and its receipt. A denial, malformed bundle or missing
+period object returns an upstream provider error.
+
 The live route declares `scale: {"status":"unknown"}`. EODHD's fundamentals
 documentation supplies example magnitudes and names the fields, without a
 monetary field-unit guarantee for this payload. A captured example, number
@@ -109,7 +113,10 @@ and the kind plus nullable `fiscal_year` and `fiscal_period`. The chart
 source leaves numbered fiscal quarter labels null when the issuer fiscal
 year end is unknown. `requested_limit` is the limit in the completed query
 and may be null. `available_period_count` counts the upstream bucket before
-that limit. It does not certify whole-history coverage.
+that limit. The provider orders by validated bucket dates before applying
+the limit. A selected record without a valid body date, or any unorderable
+bucket key, sets `unsafe.invalid_period_identity`. The count does not
+certify whole-history coverage.
 
 `record_coverage: "full-record"` means the particular selected record was
 obtained whole, through the unfiltered fundamentals bundle or the snapshot's
@@ -257,7 +264,7 @@ This successful snapshot has `results: []`.
   "requested_end": "2026-06-30",
   "coverage": {
     "authority": "explicit-snapshot",
-    "reference": "fixtures/shel-dividends-2026h1-v1",
+    "reference": "fixtures/shel-dividends-2026h1-empty-v1",
     "start": "2026-01-01",
     "end": "2026-06-30",
     "status": "verified"

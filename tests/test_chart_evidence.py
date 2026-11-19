@@ -188,28 +188,28 @@ def test_dividend_malformed_metadata_keeps_the_dated_currency_refusal():
     assert result.metadata["chart_evidence"]["unsafe"]["unknown_payment_currency"]
 
 
-@pytest.mark.parametrize(("requested_start", "rows", "status", "count"), [
-    ("2026-01-01", [DIVIDEND], "verified", 1),
-    ("2026-01-01", [], "verified", 0),
-    ("2025-12-31", [DIVIDEND], "clipped", 1),
+@pytest.mark.parametrize(("requested_start", "rows", "status", "reference"), [
+    ("2026-01-01", [DIVIDEND], "verified", "fixtures/shel-dividends-2026h1-v1"),
+    ("2026-01-01", [], "verified", "fixtures/shel-dividends-2026h1-empty-v1"),
+    ("2025-12-31", [DIVIDEND], "clipped", "fixtures/shel-dividends-2026h1-v1"),
 ])
-def test_dividend_explicit_snapshot_coverage(requested_start, rows, status, count):
+def test_dividend_explicit_snapshot_coverage(requested_start, rows, status, reference):
     from openbq_eodhd.models._chart_evidence import DividendSnapshotCoverage
     from openbq_eodhd.models.corporate_actions import normalize_dividend_snapshot
 
     acquisition = DividendSnapshotCoverage(
         qualified_symbol="SHEL.LSE", start=date(2026, 1, 1), end=date(2026, 6, 30),
-        reference="fixtures/shel-dividends-2026h1-v1",
+        reference=reference,
     )
     query = EODHDHistoricalDividendsFetcher.transform_query(
         dict(DIVIDEND_QUERY, start_date=requested_start)
     )
     result = normalize_dividend_snapshot(query, rows, acquisition)
-    assert len(result.result) == count
+    assert len(result.result) == len(rows)
     assert result.metadata["chart_evidence"]["coverage"] == {
         "status": status,
         "authority": "explicit-snapshot",
-        "reference": "fixtures/shel-dividends-2026h1-v1",
+        "reference": reference,
         "start": "2026-01-01", "end": "2026-06-30",
     }
 
@@ -312,3 +312,34 @@ def test_income_explicit_snapshot_certifies_a_period_without_a_repeated_currency
         "cost_of_revenue", "gross_profit", "income_before_tax", "income_tax_expense",
         "net_income", "operating_income", "revenue",
     ]
+
+
+@pytest.mark.parametrize(("malformed_key", "expected_delivered_periods"), [
+    ("2026-06-30", []),
+    ("invalid-period-key", [date(2025, 6, 30)]),
+])
+def test_income_period_limit_preserves_malformed_acquisition_identity(
+    malformed_key, expected_delivered_periods,
+):
+    from openbq_eodhd.models._chart_evidence import ExplicitSnapshotScale
+    from openbq_eodhd.models.fundamental import normalize_income_snapshot
+
+    query = EODHDIncomeStatementFetcher.transform_query(
+        {"symbol": "HSBA.LSE", "chart_source": True, "limit": 1}
+    )
+    scale = ExplicitSnapshotScale(
+        qualified_symbol="HSBA.LSE", multiplier=1000, reference="fixtures/hsba-invalid-period-v1",
+    )
+    section = {"currency_symbol": "USD", "yearly": {
+        "2025-06-30": dict(INCOME_COMPLETE, date="2025-06-30"),
+        malformed_key: {"totalRevenue": "120"},
+    }}
+    result = normalize_income_snapshot(
+        query, section, scale, covered_periods={date(2025, 6, 30), date(2026, 6, 30)},
+    )
+    receipt = result.metadata["chart_evidence"]
+    assert receipt["unsafe"]["invalid_period_identity"] is True
+    assert receipt["available_period_count"] == 2
+    assert receipt["raw_count"] == 1
+    assert [row.period_ending for row in result.result] == expected_delivered_periods
+    assert receipt["delivered_count"] == len(expected_delivered_periods)

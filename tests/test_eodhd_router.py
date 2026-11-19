@@ -143,8 +143,8 @@ def test_widget_generator_formats_five_day_change_as_a_fractional_percent():
     assert columns["currency_symbol"]["cellDataType"] == "text"
 
 
-@pytest.mark.parametrize("prefix", ["", "/eodhd"])
-def test_chart_source_uses_the_normal_http_envelope(prefix, monkeypatch):
+@pytest.fixture
+def chart_source_http(monkeypatch):
     from unittest.mock import MagicMock
 
     from fastapi.testclient import TestClient
@@ -154,8 +154,6 @@ def test_chart_source_uses_the_normal_http_envelope(prefix, monkeypatch):
     from openbb_core.app.service.user_service import UserService
 
     from openbq_eodhd.models import _client, _fundamentals, corporate_actions
-    from tests.test_chart_evidence import INCOME_SECTION
-    from tests.test_phase3_market import SCREENER_ROW
 
     monkeypatch.setattr(
         UserService, "read_from_file",
@@ -164,16 +162,24 @@ def test_chart_source_uses_the_normal_http_envelope(prefix, monkeypatch):
         )),
     )
     sdk = MagicMock()
-    sdk.stock_market_screener.return_value = {"data": [dict(SCREENER_ROW, refund_5d_p=5)]}
-    sdk.get_historical_dividends_data.return_value = []
-    sdk.get_fundamentals_data.return_value = {"Financials": {"Income_Statement": INCOME_SECTION}}
     monkeypatch.setattr(_client, "get_client", lambda _: sdk)
     monkeypatch.setattr(corporate_actions, "get_client", lambda _: sdk)
     monkeypatch.setattr(_fundamentals, "get_client", lambda _: sdk)
     monkeypatch.setattr(_fundamentals, "_cache", {})
     monkeypatch.setattr(_fundamentals, "_l2_get", lambda _: None)
     monkeypatch.setattr(_fundamentals, "_l2_put", lambda *_: None)
-    client = TestClient(app)
+    return TestClient(app, raise_server_exceptions=False), sdk
+
+
+@pytest.mark.parametrize("prefix", ["", "/eodhd"])
+def test_chart_source_uses_the_normal_http_envelope(prefix, chart_source_http):
+    from tests.test_chart_evidence import INCOME_SECTION
+    from tests.test_phase3_market import SCREENER_ROW
+
+    client, sdk = chart_source_http
+    sdk.stock_market_screener.return_value = {"data": [dict(SCREENER_ROW, refund_5d_p=5)]}
+    sdk.get_historical_dividends_data.return_value = []
+    sdk.get_fundamentals_data.return_value = {"Financials": {"Income_Statement": INCOME_SECTION}}
 
     def get(path, **params):
         return client.get(
@@ -219,3 +225,33 @@ def test_chart_source_uses_the_normal_http_envelope(prefix, monkeypatch):
     assert sdk.stock_market_screener.call_count == 4
     assert sdk.get_historical_dividends_data.call_count == 2
     assert sdk.get_fundamentals_data.call_count == 1
+
+
+@pytest.mark.parametrize(("bundle", "chart_status", "legacy_status"), [
+    pytest.param({"Financials": {"Income_Statement": {"yearly": {}}}}, 200, 204, id="empty-bucket"),
+    pytest.param({"message": "Access denied"}, 502, 204, id="denial"),
+    pytest.param([], 502, 204, id="wrong-bundle-type"),
+    pytest.param({"Financials": []}, 502, 204, id="empty-financials-array"),
+    pytest.param({"Financials": ["corrupt"]}, 502, 500, id="nonempty-financials-array"),
+    pytest.param({"Financials": {}}, 502, 204, id="missing-income-section"),
+    pytest.param({"Financials": {"Income_Statement": {}}}, 502, 204, id="missing-period-bucket"),
+    pytest.param({"Financials": {"Income_Statement": {"yearly": []}}}, 502, 204, id="wrong-bucket-type"),
+])
+def test_income_chart_source_distinguishes_empty_bucket_from_acquisition_error(
+    bundle, chart_status, legacy_status, chart_source_http,
+):
+    client, sdk = chart_source_http
+    sdk.get_fundamentals_data.return_value = bundle
+    endpoint = "/api/v1/eodhd/equity/fundamental/income"
+    params = {"provider": "eodhd", "symbol": "HSBA.LSE"}
+    opted_in = client.get(endpoint, params=dict(params, chart_source=True))
+    assert opted_in.status_code == chart_status, opted_in.text
+    if chart_status == 200:
+        assert opted_in.json()["results"] == []
+        receipt = opted_in.json()["extra"]["results_metadata"]["chart_evidence"]
+        assert receipt["raw_count"] == receipt["delivered_count"] == 0
+        assert receipt["periods"] == []
+    else:
+        assert "detail" in opted_in.json()
+    sdk.get_fundamentals_data.assert_called_once_with("HSBA.LSE")
+    assert client.get(endpoint, params=dict(params, chart_source=False)).status_code == legacy_status
