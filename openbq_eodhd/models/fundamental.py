@@ -10,9 +10,11 @@ field is passed through snake_cased (the standard models allow extra fields).
 """
 
 import re
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Literal
 
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.balance_sheet import (
     BalanceSheetData,
@@ -26,10 +28,14 @@ from openbb_core.provider.standard_models.income_statement import (
     IncomeStatementData,
     IncomeStatementQueryParams,
 )
-from openbb_core.provider.utils.errors import EmptyDataError
+from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 from pydantic import Field, create_model
 
 from openbq_eodhd.aggregation import attach_widget_hints
+from openbq_eodhd.models._chart_evidence import (
+    ExplicitSnapshotScale, FiscalPeriod, annotate, finite_number, income_evidence, iso_date,
+    utc_now,
+)
 
 # EODHD field -> OpenBB conventional field name. Unmapped fields pass through
 # snake_cased, so these maps only need the commonly-consumed line items.
@@ -90,6 +96,7 @@ CASHFLOW_MAP = {
 
 # Keys handled explicitly (date/meta) — excluded from numeric passthrough.
 _META_KEYS = {"date", "filing_date", "currency_symbol"}
+_PERIOD_COORDINATES = {"period_ending", "fiscal_year", "fiscal_period"}
 _CAMEL = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -125,7 +132,7 @@ def _fy_end_month(fiscal_year_end: Any) -> int | None:
     return _MONTHS.get(fiscal_year_end.strip().lower())
 
 
-def _fiscal(end: date, period: str, fy_end_month: int | None) -> tuple[int, str]:
+def _fiscal(end: date, period: str, fy_end_month: int | None) -> tuple[int, FiscalPeriod]:
     """(fiscal_year, fiscal_period) for a period-ending date.
 
     The fiscal year is named for the calendar year it ends in; quarters count
@@ -135,30 +142,53 @@ def _fiscal(end: date, period: str, fy_end_month: int | None) -> tuple[int, str]
     m = fy_end_month or 12
     year = end.year + (1 if end.month > m else 0)
     quarter = ((end.month - m - 1) % 12) // 3 + 1
-    return year, "FY" if period == "annual" else f"Q{quarter}"
+    return year, "FY" if period == "annual" else ("Q1", "Q2", "Q3", "Q4")[quarter - 1]
+
+
+def _chart_fiscal(
+    end: date, period: str, fy_end_month: int | None,
+) -> tuple[int | None, FiscalPeriod | None]:
+    if period == "quarter" and fy_end_month is None:
+        return None, None
+    return _fiscal(end, period, fy_end_month)
 
 
 def _transform(
     section_data: dict, period: str, limit: int | None, field_map: dict, fiscal_year_end: int | None = None
 ) -> list[dict]:
     """Turn one EODHD statement section into standard-model row dicts."""
-    # pylint: disable=import-outside-toplevel
-    from pandas import isna, to_datetime
-
     bucket = section_data.get("yearly" if period == "annual" else "quarterly") or {}
     # EODHD keys the entries by period-ending date; newest first.
     entries = sorted(bucket.values(), key=lambda e: e.get("date", ""), reverse=True)
     if limit:
         entries = entries[:limit]
+    rows = _normalize_statement_entries(entries, period, field_map, fiscal_year_end)
+    if not rows:
+        raise EmptyDataError("The request was returned empty.")
+    return rows
 
+
+def _normalize_statement_entries(
+    entries: list[dict], period: str, field_map: dict, fiscal_year_end: int | None,
+    *, chart_source: bool = False,
+) -> list[dict]:
+    from pandas import isna, to_datetime
+
+    mapped_lines = set(field_map.values())
     rows: list[dict] = []
     for entry in entries:
-        end_ts = to_datetime(entry.get("date"), errors="coerce")
         # Skip entries whose period-ending date is missing/unparseable.
-        if isna(end_ts):
-            continue
-        end = end_ts.date()
-        fiscal_year, fiscal_period = _fiscal(end, period, fiscal_year_end)
+        if chart_source:
+            end = iso_date(entry.get("date"))
+            if end is None:
+                continue
+            fiscal_year, fiscal_period = _chart_fiscal(end, period, fiscal_year_end)
+        else:
+            end_ts = to_datetime(entry.get("date"), errors="coerce")
+            if isna(end_ts):
+                continue
+            end = end_ts.date()
+            fiscal_year, fiscal_period = _fiscal(end, period, fiscal_year_end)
         row: dict[str, Any] = {
             "period_ending": end,
             "fiscal_year": fiscal_year,
@@ -167,10 +197,19 @@ def _transform(
         for key, value in entry.items():
             if key in _META_KEYS:
                 continue
-            row[field_map.get(key, _snake(key))] = _num(value)
+            line_id = field_map.get(key, _snake(key))
+            if chart_source:
+                if line_id in _PERIOD_COORDINATES or key == "scale_multiplier":
+                    continue
+                if line_id in mapped_lines:
+                    if key in field_map:
+                        row[line_id] = finite_number(value)
+                    continue  # A passthrough field cannot overwrite a canonical line.
+                normalized = _num(value)
+                row[line_id] = finite_number(normalized) if isinstance(normalized, float) else normalized
+            else:
+                row[line_id] = _num(value)
         rows.append(row)
-    if not rows:
-        raise EmptyDataError("The request was returned empty.")
     return rows
 
 
@@ -195,6 +234,7 @@ class EODHDIncomeStatementQueryParams(IncomeStatementQueryParams):
     __json_schema_extra__ = {"period": {"choices": ["annual", "quarter"]}}
     period: Literal["annual", "quarter"] = Field(default="annual", description="Reporting period.")
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols (e.g. 'US').")
+    chart_source: bool = Field(default=False, description="Include financial chart acquisition evidence.")
 
 
 class EODHDBalanceSheetQueryParams(BalanceSheetQueryParams):
@@ -254,6 +294,62 @@ EODHDCashFlowStatementData = attach_widget_hints(
 )
 
 
+@dataclass(frozen=True)
+class _IncomeAcquisition:
+    section: dict
+    fiscal_year_end: int | None
+    retrieved_at: datetime
+
+
+def _annotated_income(
+    query: EODHDIncomeStatementQueryParams, acquisition: _IncomeAcquisition,
+    *, scale: ExplicitSnapshotScale | None = None, covered_periods: set[date] | None = None,
+) -> AnnotatedResult[list[EODHDIncomeStatementData]]:
+    from openbq_eodhd.models._fundamentals import qualify
+
+    bucket = acquisition.section.get("yearly" if query.period == "annual" else "quarterly")
+    if bucket is None:
+        raise EmptyDataError("The request was returned empty.")
+    if not isinstance(bucket, dict):
+        raise UnauthorizedError("EODHD (Income_Statement): expected an object of period records.")
+    entries = [(key, entry if isinstance(entry, dict) else {}) for key, entry in bucket.items()]
+    entries.sort(key=lambda item: str(item[1].get("date") or ""), reverse=True)
+    selected = entries[:query.limit] if query.limit else entries
+    available_dates = [iso_date(raw.get("date")) for _, raw in entries]
+    fiscal_labels = {
+        day: _chart_fiscal(day, query.period, acquisition.fiscal_year_end)
+        for day in available_dates if day is not None
+    }
+    mapped_lines = set(INCOME_MAP.values())
+    origin_conflicts = {
+        day for _, raw in selected
+        if (day := iso_date(raw.get("date"))) is not None
+        and any(key not in INCOME_MAP and _snake(key) in mapped_lines for key in raw)
+    }
+    evidence = income_evidence(
+        acquisition.section, selected, available_dates, fiscal_labels,
+        symbol=qualify(query.symbol, query.exchange),
+        period_kind="FY" if query.period == "annual" else "FQ",
+        limit=query.limit, retrieved_at=acquisition.retrieved_at,
+        snapshot_scale=scale, covered_periods=covered_periods, origin_conflicts=origin_conflicts,
+    )
+    rows = _normalize_statement_entries(
+        [raw for _, raw in selected], query.period, INCOME_MAP, acquisition.fiscal_year_end,
+        chart_source=True,
+    )
+    return annotate([EODHDIncomeStatementData.model_validate(row) for row in rows], evidence)
+
+
+def normalize_income_snapshot(
+    query: EODHDIncomeStatementQueryParams, section: dict, scale: ExplicitSnapshotScale,
+    *, covered_periods: set[date], fiscal_year_end: int | None = None,
+    retrieved_at: datetime | None = None,
+) -> AnnotatedResult[list[EODHDIncomeStatementData]]:
+    """Normalize explicit snapshot periods with independently declared monetary scale."""
+    acquisition = _IncomeAcquisition(section, fiscal_year_end, retrieved_at or utc_now())
+    return _annotated_income(query, acquisition, scale=scale, covered_periods=covered_periods)
+
+
 # --- Fetchers ------------------------------------------------------------------
 class EODHDIncomeStatementFetcher(
     Fetcher[EODHDIncomeStatementQueryParams, list[EODHDIncomeStatementData]]
@@ -265,11 +361,30 @@ class EODHDIncomeStatementFetcher(
         return EODHDIncomeStatementQueryParams(**params)
 
     @staticmethod
-    async def aextract_data(query, credentials, **kwargs) -> list[dict]:  # pylint: disable=unused-argument
-        return await _extract("Income_Statement", INCOME_MAP, query, credentials)
+    async def aextract_data(query, credentials, **kwargs) -> list[dict] | _IncomeAcquisition:
+        if not query.chart_source:
+            return await _extract("Income_Statement", INCOME_MAP, query, credentials)
+
+        from openbq_eodhd.models._fundamentals import general, get_bundle
+
+        bundle = await get_bundle(query.symbol, query.exchange, credentials)
+        if bundle.get("error") or bundle.get("errors"):
+            raise UnauthorizedError("EODHD returned a fundamentals error.")
+        section = (bundle.get("Financials") or {}).get("Income_Statement")
+        if section is None:
+            raise EmptyDataError("The request was returned empty.")
+        if not isinstance(section, dict):
+            raise UnauthorizedError("EODHD (Income_Statement): expected a statement object.")
+        return _IncomeAcquisition(
+            section, _fy_end_month(general(bundle).get("FiscalYearEnd")), utc_now(),
+        )
 
     @staticmethod
-    def transform_data(query, data: list[dict], **kwargs) -> list[EODHDIncomeStatementData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: list[dict] | _IncomeAcquisition, **kwargs,
+    ) -> list[EODHDIncomeStatementData] | AnnotatedResult[list[EODHDIncomeStatementData]]:
+        if isinstance(data, _IncomeAcquisition):
+            return _annotated_income(query, data)
         return [EODHDIncomeStatementData.model_validate(r) for r in data]
 
 

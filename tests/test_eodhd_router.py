@@ -128,3 +128,94 @@ def test_earnings_vs_estimates_route():
     prov = next(p for p in op["parameters"] if p["name"] == "provider")
     schema = prov["schema"]
     assert (schema.get("enum") or [schema.get("const")]) == ["eodhd"]
+
+
+def test_widget_generator_formats_five_day_change_as_a_fractional_percent():
+    from openbb_core.api.rest_api import app
+    from openbb_platform_api.utils.widgets import build_json
+
+    widgets = build_json(app.openapi(), [])
+    screener = next(
+        w for w in widgets.values() if w["endpoint"].endswith("/eodhd/equity/screener")
+    )
+    columns = {column["field"]: column for column in screener["data"]["table"]["columnsDefs"]}
+    assert columns["price_change_5d"]["formatterFn"] == "percent"
+    assert columns["currency_symbol"]["cellDataType"] == "text"
+
+
+@pytest.mark.parametrize("prefix", ["", "/eodhd"])
+def test_chart_source_uses_the_normal_http_envelope(prefix, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from fastapi.testclient import TestClient
+    from openbb_core.api.rest_api import app
+    from openbb_core.app.model.credentials import Credentials
+    from openbb_core.app.model.user_settings import UserSettings
+    from openbb_core.app.service.user_service import UserService
+
+    from openbq_eodhd.models import _client, _fundamentals, corporate_actions
+    from tests.test_chart_evidence import INCOME_SECTION
+    from tests.test_phase3_market import SCREENER_ROW
+
+    monkeypatch.setattr(
+        UserService, "read_from_file",
+        staticmethod(lambda: UserSettings.model_construct(
+            credentials=Credentials(eodhd_api_key="TEST_KEY")
+        )),
+    )
+    sdk = MagicMock()
+    sdk.stock_market_screener.return_value = {"data": [dict(SCREENER_ROW, refund_5d_p=5)]}
+    sdk.get_historical_dividends_data.return_value = []
+    sdk.get_fundamentals_data.return_value = {"Financials": {"Income_Statement": INCOME_SECTION}}
+    monkeypatch.setattr(_client, "get_client", lambda _: sdk)
+    monkeypatch.setattr(corporate_actions, "get_client", lambda _: sdk)
+    monkeypatch.setattr(_fundamentals, "get_client", lambda _: sdk)
+    monkeypatch.setattr(_fundamentals, "_cache", {})
+    monkeypatch.setattr(_fundamentals, "_l2_get", lambda _: None)
+    monkeypatch.setattr(_fundamentals, "_l2_put", lambda *_: None)
+    client = TestClient(app)
+
+    def get(path, **params):
+        return client.get(
+            "/api/v1" + prefix + path, params={"provider": "eodhd", **params},
+        )
+
+    screener = get("/equity/screener", chart_source=True)
+    assert screener.status_code == 200, screener.text
+    assert screener.json()["extra"]["results_metadata"]["chart_evidence"]["kind"] == "screener"
+    assert screener.json()["results"][0]["price_change_5d"] == 0.05
+    legacy = get("/equity/screener", chart_source=False)
+    assert legacy.status_code == 200, legacy.text
+    assert "results_metadata" not in legacy.json()["extra"]
+    sdk.stock_market_screener.return_value = {"data": []}
+    empty_screen = get("/equity/screener", chart_source=True)
+    assert empty_screen.status_code == 200, empty_screen.text
+    assert empty_screen.json()["results"] == []
+    assert empty_screen.json()["extra"]["results_metadata"]["chart_evidence"]["raw_count"] == 0
+    assert get("/equity/screener", chart_source=False).status_code == 204
+
+    bounds = {"symbol": "SHEL.LSE", "start_date": "2026-01-01", "end_date": "2026-06-30"}
+    dividend = get("/equity/fundamental/dividends", chart_source=True, **bounds)
+    assert dividend.status_code == 200, dividend.text
+    assert dividend.json()["results"] == []
+    receipt = dividend.json()["extra"]["results_metadata"]["chart_evidence"]
+    assert receipt["kind"] == "dividends"
+    assert receipt["coverage"] == {"status": "unknown"}
+    assert receipt["requested_start"] == "2026-01-01"
+    assert receipt["requested_end"] == "2026-06-30"
+    assert get("/equity/fundamental/dividends", chart_source=False, **bounds).status_code == 204
+
+    income = get("/equity/fundamental/income", symbol="HSBA.LSE", chart_source=True, limit=1)
+    assert income.status_code == 200, income.text
+    receipt = income.json()["extra"]["results_metadata"]["chart_evidence"]
+    assert receipt["kind"] == "income"
+    assert receipt["reporting_currency"] == "USD"
+    assert receipt["scale"] == {"status": "unknown"}
+    assert income.json()["results"][0]["net_income"] == 20
+    legacy_income = get("/equity/fundamental/income", symbol="HSBA.LSE", chart_source=False, limit=1)
+    assert legacy_income.status_code == 200, legacy_income.text
+    assert legacy_income.json()["results"] == income.json()["results"]
+    assert "results_metadata" not in legacy_income.json()["extra"]
+    assert sdk.stock_market_screener.call_count == 4
+    assert sdk.get_historical_dividends_data.call_count == 2
+    assert sdk.get_fundamentals_data.call_count == 1
