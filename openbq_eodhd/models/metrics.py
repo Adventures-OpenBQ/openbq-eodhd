@@ -12,6 +12,7 @@ records this difference — don't fake a series.
 
 from typing import Any
 
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.financial_ratios import (
     FinancialRatiosData, FinancialRatiosQueryParams,
@@ -23,6 +24,8 @@ from openbb_core.provider.utils.errors import EmptyDataError
 from pydantic import Field
 
 from openbq_eodhd.models import _fundamentals as F
+from openbq_eodhd.models._chart_sources import ChartSourceEnvelope, annotate_chart_sources
+from openbq_eodhd.models._metric_chart_source import MetricSource, headline_source
 
 
 def _date(v):
@@ -35,6 +38,7 @@ def _date(v):
 
 class EODHDKeyMetricsQueryParams(KeyMetricsQueryParams):
     """EODHD Key Metrics Query."""
+    chart_source: bool = Field(default=False, description="Include source evidence for qualified reported KPI headlines.")
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols.")
 
 
@@ -74,15 +78,20 @@ class EODHDKeyMetricsFetcher(Fetcher[EODHDKeyMetricsQueryParams, list[EODHDKeyMe
         return EODHDKeyMetricsQueryParams(**params)
 
     @staticmethod
-    async def aextract_data(query, credentials, **kwargs) -> dict:  # pylint: disable=unused-argument
+    async def aextract_data(query, credentials, **kwargs) -> dict | F.FundamentalsAcquisition:  # pylint: disable=unused-argument
+        if query.chart_source:
+            return await F.get_bundle_acquisition(query.symbol, query.exchange, credentials)
         return await F.get_bundle(query.symbol, query.exchange, credentials)
 
     @staticmethod
-    def transform_data(query, data: dict, **kwargs) -> list[EODHDKeyMetricsData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: dict | F.FundamentalsAcquisition, **kwargs,
+    ) -> list[EODHDKeyMetricsData] | AnnotatedResult[list[EODHDKeyMetricsData]]:
+        data, receipt, acquired = headline_source(query, data, "eodhd-key-metrics")
         h, v = F.highlights(data), F.valuation(data)
         if not h and not v:
             raise EmptyDataError(f"EODHD has no metrics for '{query.symbol}'.")
-        return [EODHDKeyMetricsData.model_validate({
+        rows = [EODHDKeyMetricsData.model_validate({
             "symbol": query.symbol.upper(),
             "period_ending": _date(h.get("MostRecentQuarter")),
             "fiscal_period": "TTM",
@@ -111,7 +120,11 @@ class EODHDKeyMetricsFetcher(Fetcher[EODHDKeyMetricsQueryParams, list[EODHDKeyMe
             "ev_to_revenue": v.get("EnterpriseValueRevenue"),
             "ev_to_ebitda": v.get("EnterpriseValueEbitda"),
             "beta": F.technicals(data).get("Beta"),
+            **acquired,
         })]
+        if receipt is None:
+            return rows
+        return annotate_chart_sources(rows, ChartSourceEnvelope[MetricSource](receipts=[receipt]))
 
 
 class EODHDFinancialRatiosQueryParams(FinancialRatiosQueryParams):
@@ -120,6 +133,7 @@ class EODHDFinancialRatiosQueryParams(FinancialRatiosQueryParams):
     `limit` is accepted for interface parity but EODHD carries a single
     current snapshot — the answer is always one row.
     """
+    chart_source: bool = Field(default=False, description="Include source evidence for qualified reported KPI headlines.")
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols.")
 
 
@@ -150,15 +164,20 @@ class EODHDFinancialRatiosFetcher(
         return EODHDFinancialRatiosQueryParams(**params)
 
     @staticmethod
-    async def aextract_data(query, credentials, **kwargs) -> dict:  # pylint: disable=unused-argument
+    async def aextract_data(query, credentials, **kwargs) -> dict | F.FundamentalsAcquisition:  # pylint: disable=unused-argument
+        if query.chart_source:
+            return await F.get_bundle_acquisition(query.symbol, query.exchange, credentials)
         return await F.get_bundle(query.symbol, query.exchange, credentials)
 
     @staticmethod
-    def transform_data(query, data: dict, **kwargs) -> list[EODHDFinancialRatiosData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: dict | F.FundamentalsAcquisition, **kwargs,
+    ) -> list[EODHDFinancialRatiosData] | AnnotatedResult[list[EODHDFinancialRatiosData]]:
+        data, receipt, acquired = headline_source(query, data, "eodhd-financial-ratios")
         h, v = F.highlights(data), F.valuation(data)
         if not h and not v:
             raise EmptyDataError(f"EODHD has no ratios for '{query.symbol}'.")
-        return [EODHDFinancialRatiosData.model_validate({
+        rows = [EODHDFinancialRatiosData.model_validate({
             "symbol": query.symbol.upper(),
             "period_ending": _date(h.get("MostRecentQuarter")),
             "fiscal_period": "TTM",
@@ -174,4 +193,8 @@ class EODHDFinancialRatiosFetcher(
             "return_on_assets": h.get("ReturnOnAssetsTTM"),
             "return_on_equity": h.get("ReturnOnEquityTTM"),
             "dividend_yield": h.get("DividendYield"),
+            **acquired,
         })]
+        if receipt is None:
+            return rows
+        return annotate_chart_sources(rows, ChartSourceEnvelope[MetricSource](receipts=[receipt]))

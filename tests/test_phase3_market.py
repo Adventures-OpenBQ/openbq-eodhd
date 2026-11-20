@@ -8,7 +8,7 @@ Samples are trimmed live responses recorded 2026-09-01 with the account key.
 
 import asyncio
 from datetime import date
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from openbb_core.provider.utils.errors import EmptyDataError

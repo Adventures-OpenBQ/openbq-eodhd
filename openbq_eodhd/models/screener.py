@@ -12,6 +12,7 @@ mapped onto the screener's filter fields.
 from datetime import date as dateType
 from typing import Any
 
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.equity_screener import (
     EquityScreenerData, EquityScreenerQueryParams,
@@ -19,6 +20,10 @@ from openbb_core.provider.standard_models.equity_screener import (
 from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 from pydantic import Field
 
+from openbq_eodhd.models._chart_evidence import (
+    ScreenerScope, annotate, finite_number, iso_date, optional_text, screener_evidence,
+    screener_identity,
+)
 from openbq_eodhd.models._client import sdk_call
 
 
@@ -45,6 +50,7 @@ class EODHDEquityScreenerQueryParams(EquityScreenerQueryParams):
     )
     limit: int = Field(default=50, description="Results per call (API cap 100).")
     offset: int = Field(default=0, description="Result offset (API cap 1000).")
+    chart_source: bool = Field(default=False, description="Include financial chart acquisition evidence.")
 
     def to_filters(self) -> list[list]:
         pairs = [
@@ -71,6 +77,11 @@ class EODHDEquityScreenerData(EquityScreenerData):
     price: float | None = Field(default=None, description="Last adjusted close.")
     eps: float | None = Field(default=None, description="Earnings per share.")
     dividend_yield: float | None = Field(default=None, description="Dividend yield.")
+    price_change_5d: float | None = Field(
+        default=None, description="Five-day price change as a fraction.",
+        json_schema_extra={"x-widget_config": {"formatterFn": "normalizedPercent"}},
+    )
+    currency_symbol: str | None = Field(default=None, description="Listing currency symbol or code.")
     avg_volume_1d: float | None = Field(default=None, description="1-day average volume.")
     avg_volume_200d: float | None = Field(default=None, description="200-day average volume.")
     last_day_data_date: dateType | None = Field(default=None, description="Date of the priced data.")
@@ -104,11 +115,15 @@ class EODHDEquityScreenerFetcher(
             )
             if isinstance(resp, dict):
                 rows = resp.get("data")
-                if rows is None:
+                if rows is None or (query.chart_source and (resp.get("error") or resp.get("errors"))):
                     raise UnauthorizedError(
                         f"EODHD (screener): {resp.get('message') or resp.get('error') or resp}"
                     )
                 resp = rows
+            if query.chart_source:
+                if not isinstance(resp, list):
+                    raise UnauthorizedError("EODHD (screener): expected a list of records.")
+                return resp
             if not resp:
                 raise EmptyDataError("EODHD screener matched nothing.")
             return resp
@@ -116,24 +131,49 @@ class EODHDEquityScreenerFetcher(
         return await to_thread(_sync)
 
     @staticmethod
-    def transform_data(query, data: list[dict], **kwargs) -> list[EODHDEquityScreenerData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: list[dict], **kwargs,
+    ) -> list[EODHDEquityScreenerData] | AnnotatedResult[list[EODHDEquityScreenerData]]:
+        evidence = None
+        if query.chart_source:
+            scope = ScreenerScope(
+                sort=query.sort, limit=query.limit, offset=query.offset, signals=query.signals,
+                filters=[tuple(row) for row in query.to_filters()],
+            )
+            evidence = screener_evidence(data, scope)
+
+        number = finite_number if query.chart_source else lambda value: value
+        text = optional_text if query.chart_source else lambda value: value
         rows = []
         for it in data:
+            if query.chart_source and not isinstance(it, dict):
+                continue
             code, exchange = it.get("code") or "", it.get("exchange") or ""
             if not code:
                 continue
+            price_date = it.get("last_day_data_date") or None
+            if query.chart_source:
+                symbol = screener_identity(code, exchange)
+                if symbol is None:
+                    continue
+                price_date = iso_date(price_date)
+            else:
+                symbol = f"{code}.{exchange}".strip(".").upper()
+            change = finite_number(it.get("refund_5d_p"))
             rows.append(EODHDEquityScreenerData.model_validate({
-                "symbol": f"{code}.{exchange}".strip(".").upper(),
-                "name": it.get("name"),
+                "symbol": symbol,
+                "name": text(it.get("name")),
                 "exchange": exchange or None,
-                "sector": it.get("sector"),
-                "industry": it.get("industry"),
-                "market_cap": it.get("market_capitalization"),
-                "price": it.get("adjusted_close"),
-                "eps": it.get("earnings_share"),
-                "dividend_yield": it.get("dividend_yield"),
-                "avg_volume_1d": it.get("avgvol_1d"),
-                "avg_volume_200d": it.get("avgvol_200d"),
-                "last_day_data_date": it.get("last_day_data_date") or None,
+                "sector": text(it.get("sector")),
+                "industry": text(it.get("industry")),
+                "market_cap": number(it.get("market_capitalization")),
+                "price": number(it.get("adjusted_close")),
+                "eps": number(it.get("earnings_share")),
+                "dividend_yield": number(it.get("dividend_yield")),
+                "price_change_5d": None if change is None else change / 100,
+                "currency_symbol": optional_text(it.get("currency_symbol")),
+                "avg_volume_1d": number(it.get("avgvol_1d")),
+                "avg_volume_200d": number(it.get("avgvol_200d")),
+                "last_day_data_date": price_date,
             }))
-        return rows
+        return annotate(rows, evidence) if evidence is not None else rows
