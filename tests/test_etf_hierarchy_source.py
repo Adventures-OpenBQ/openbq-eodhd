@@ -158,3 +158,25 @@ def test_unexplained_drops_and_false_authority(delta):
     with pytest.raises(ValidationError):
         TypeAdapter(EtfHierarchySource).validate_json(json.dumps(
             {**s, "origin": "acquired-snapshot", "coverage": "partial", "coverage_reference": "issuer:report", **delta}))
+
+@pytest.mark.parametrize("holdings", [
+    {"AAPL.US": APPLE, "aapl.us": None},
+    {"aapl.us": None, "AAPL.US": APPLE},
+    {"AAPL.US": None, "aapl.us": 17, "AAYA.F": BLANK},
+])
+def test_nonobject_map_entries_still_witness_a_canonical_duplicate(holdings):
+    s = receipt(acquired({**BUNDLE, "ETF_Data": {"Holdings": holdings}}))
+    assert s["raw_count"] == len(holdings) and s["delivered_count"] == 1
+    assert s["unsafe"]["duplicate_conflict"] and s["unsafe"]["fund_conflict"] and s["unsafe"]["basis_conflict"]
+    assert "duplicate_conflict" in s["diagnostics"] and "exact_duplicate" not in s["diagnostics"]
+
+
+@pytest.mark.parametrize("raw,flag", [(1.7e308, "excess_weight"), (-1.7e308, "negative_weight"),
+                                      (10**400, "excess_weight"), (-(10**400), "negative_weight")])
+def test_raw_finite_sign_and_excess_survive_fraction_delivery_limits(raw, flag):
+    b = deepcopy(BUNDLE)
+    b["ETF_Data"]["Holdings"]["DROP.US"] = {**APPLE, "Assets_%": raw}
+    s = receipt(acquired(b))
+    assert s["raw_count"] == 3 and s["delivered_count"] == 2
+    assert s["unsafe"][flag] and flag in s["diagnostics"]
+    assert not s["unsafe"]["negative_weight" if flag == "excess_weight" else "excess_weight"]

@@ -145,20 +145,26 @@ def holding_hierarchy(bundle: dict, fund: str, exchange: str, retrieved_at: date
     positive = []
     rows = []
     for key, holding in holdings.items():
+        symbol = key.upper() if isinstance(key, str) else None
         if not isinstance(holding, dict):
+            if _symbol(symbol):
+                flags["duplicate_conflict"] |= symbol in seen
+                seen.setdefault(symbol, None)
             flags["fund_conflict"] = flags["basis_conflict"] = True
             continue
-        symbol = key.upper() if isinstance(key, str) else None
         code, venue = holding.get("Code"), holding.get("Exchange")
         qualified = f"{code}.{venue}".upper() if isinstance(code, str) and isinstance(venue, str) else None
         identity_ok = bool(_symbol(symbol) and symbol == qualified)
         flags["fund_conflict"] |= not identity_ok
         raw = holding.get("Assets_%")
-        numeric = type(raw) in (float, int) and -1e308 <= raw <= 1e308 and isfinite(raw)
-        weight = raw / 100 if numeric else None
-        valid_weight = numeric and (raw == 0 or weight != 0)
-        flags["basis_conflict"] |= not valid_weight
+        numeric = type(raw) is int or (type(raw) is float and isfinite(raw))
         flags["negative_weight"] |= numeric and raw < 0
+        try:
+            weight = raw / 100 if numeric else None
+        except OverflowError:
+            weight = None  # A finite JSON integer can exceed the deliverable fraction range.
+        valid_weight = weight is not None and (raw == 0 or weight != 0)
+        flags["basis_conflict"] |= not valid_weight
         sector = holding.get("Sector")
         valid_sector = sector is None or isinstance(sector, str)
         flags["classification_conflict"] |= not valid_sector
@@ -167,20 +173,27 @@ def holding_hierarchy(bundle: dict, fund: str, exchange: str, retrieved_at: date
         coordinates = {s for s in (symbol, qualified) if _symbol(s)}
         duplicate = False
         for coordinate in coordinates:
-            previous = seen.get(coordinate)
-            if previous is not None:
-                duplicate = True
-                if previous != holding or not identity_ok:
-                    flags["duplicate_conflict"] = True
-                if previous.get("Sector") != sector:
-                    flags["classification_conflict"] = True
+            if coordinate not in seen:
+                continue
+            previous = seen[coordinate]
+            if previous is None:
+                flags["duplicate_conflict"] = True
+                continue  # The malformed entry witnessed the identity but supplied no deliverable row.
+            duplicate = True
+            if previous != holding or not identity_ok:
+                flags["duplicate_conflict"] = True
+            if previous.get("Sector") != sector:
+                flags["classification_conflict"] = True
         if duplicate and identity_ok and seen.get(symbol) == holding:
             exact_duplicate = True
             continue
         for coordinate in coordinates:
-            seen.setdefault(coordinate, holding)
+            if seen.get(coordinate) is None:
+                seen[coordinate] = holding
         if numeric and raw > 0:
-            positive.append(min(weight, 2.0))
+            # A single 200% holding already exceeds the admissible total. Capping each
+            # raw contribution here keeps the diagnostic independent of float overflow.
+            positive.append(min(raw, 200) / 100)
         if duplicate or not identity_ok or not valid_weight or not valid_sector or weight < 0:
             continue
         rows.append({"fund_symbol": fund, "snapshot": snapshot, "symbol": symbol, "weight": weight,
