@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
+from openbq_eodhd.models._fundamentals import primary_us_common_stock
 from openbq_eodhd.models._chart_sources import ChartSourceFacts, ChartSourceReceipt
 
 Diagnostic = Literal["identity_conflict", "unit_conflict", "date_conflict", "partition_conflict"]
@@ -24,7 +25,6 @@ _UTC_STAMP = re.compile(
 )
 _IDENTITY_FIELDS = {"symbol", "share_class", "as_of", "denominator", "constructor", "prototype"}
 _HEADLINE_ORIGINS = {"insiders": "percent_insiders", "institutions": "percent_institutions"}
-_US_VENUES = ("NASDAQ", "NYSE", "NYSE ARCA", "BATS")
 
 
 class OwnershipUnsafe(ChartSourceFacts):
@@ -163,13 +163,9 @@ def share_statistics_source(
     bundle: dict, issuer: str, exchange: str, retrieved_at: datetime | None,
 ) -> tuple[OwnershipLiveBarsSource, dict] | None:
     """Bind only acquired primary U.S. common-stock headline percentages."""
-    general, stats = bundle.get("General"), bundle.get("SharesStats")
-    if (
-        retrieved_at is None or exchange.upper() != "US" or len(issuer) > 128 or not _SYMBOL.fullmatch(issuer)
-        or not issuer.endswith(".US") or not isinstance(general, dict) or not isinstance(stats, dict) or not stats
-        or general.get("Code") != issuer.removesuffix(".US") or general.get("PrimaryTicker") != issuer
-        or general.get("Exchange") not in _US_VENUES or general.get("Type") != "Common Stock"
-    ):
+    stats = bundle.get("SharesStats")
+    if (retrieved_at is None or not primary_us_common_stock(bundle, issuer, exchange)
+            or not isinstance(stats, dict) or not stats):
         return None
 
     conflict = False

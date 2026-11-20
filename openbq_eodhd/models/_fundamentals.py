@@ -65,6 +65,18 @@ def qualify(symbol: str, exchange: str = "US") -> str:
     return s if "." in s else f"{s}.{exchange.upper()}"
 
 
+def primary_us_common_stock(bundle: dict, listing: str, exchange: str) -> bool:
+    """Check the acquired U.S. primary common-stock identity against the requested listing."""
+    general = bundle.get("General")
+    return bool(
+        exchange.upper() == "US" and len(listing) <= 128
+        and re.fullmatch(r"[A-Z0-9^][A-Z0-9^_/-]*(?:\.[A-Z0-9^_/-]+)*\.US", listing)
+        and isinstance(general, dict) and general.get("Code") == listing.removesuffix(".US")
+        and general.get("PrimaryTicker") == listing and general.get("Type") == "Common Stock"
+        and general.get("Exchange") in ("NASDAQ", "NYSE", "NYSE ARCA", "BATS")
+    )
+
+
 def _reset_cache_for_tests() -> None:
     _cache.clear()
     _locks.clear()
