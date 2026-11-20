@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from asyncio import Lock, to_thread
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from openbb_core.app.model.abstract.error import OpenBBError
@@ -28,6 +29,10 @@ from openbq_eodhd.models._client import get_client, raise_sdk_error, rest_json, 
 _TTL_SECONDS = 120.0            # L1 in-process burst-coalescing TTL
 _L2_LIBRARY = "eodhd_fundamentals_cache"
 _EARNINGS_V11_SUFFIX = "#earnings-v1.1"
+_CACHE_UTC_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]{1,6})?(?:Z|\+00:00)",
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +42,14 @@ class FundamentalsAcquisition:
     retrieved_at: datetime | None
 
 
-_cache: dict[str, tuple[float, FundamentalsAcquisition]] = {}
+@dataclass(frozen=True)
+class _FundamentalsCacheEntry:
+    payload: dict
+    retrieved_at: datetime | None
+    stored_at: datetime
+
+
+_cache: dict[str, tuple[float, _FundamentalsCacheEntry]] = {}
 _locks: dict[str, Lock] = {}
 
 
@@ -65,7 +77,7 @@ def _get_lock(sym: str) -> Lock:
     return lock
 
 
-def _cached(sym: str) -> FundamentalsAcquisition | None:
+def _cached(sym: str) -> _FundamentalsCacheEntry | None:
     hit = _cache.get(sym)
     if hit is None:
         return None
@@ -107,7 +119,7 @@ def _arctic_library():
         return None
 
 
-def _l2_get(sym: str) -> FundamentalsAcquisition | None:
+def _l2_get(sym: str) -> _FundamentalsCacheEntry | None:
     """Fresh cached bundle for sym, or None. Never raises."""
     try:
         lib = _arctic_library()
@@ -120,50 +132,62 @@ def _l2_get(sym: str) -> FundamentalsAcquisition | None:
         if not fetched:
             return None
         stored_at = datetime.fromisoformat(fetched)
-        age = (datetime.now(timezone.utc) - stored_at).total_seconds()
-        if age > _l2_ttl_seconds():
+        now = datetime.now(timezone.utc)
+        if (now - stored_at).total_seconds() > _l2_ttl_seconds():
             return None
-        try:
-            retrieved_at = datetime.fromisoformat(meta.get("retrieved_at"))
-        except (TypeError, ValueError):
-            retrieved_at = None
-        if retrieved_at is not None and (retrieved_at.utcoffset() != timedelta(0) or retrieved_at > stored_at):
-            retrieved_at = None
-        return FundamentalsAcquisition(json.loads(cached.data["payload"].iloc[0]), retrieved_at)
+        # Keep legacy TTL and payload behavior, including when the wall clock has rolled back.
+        raw_stamp = meta.get("retrieved_at")
+        retrieved_at = None
+        if stored_at <= now and _CACHE_UTC_TIMESTAMP.fullmatch(fetched) and isinstance(raw_stamp, str):
+            if _CACHE_UTC_TIMESTAMP.fullmatch(raw_stamp):
+                try:
+                    candidate = datetime.fromisoformat(raw_stamp)
+                    if candidate <= stored_at:
+                        retrieved_at = candidate
+                except ValueError:
+                    pass
+        return _FundamentalsCacheEntry(json.loads(cached.data["payload"].iloc[0]), retrieved_at, stored_at)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _l2_put(sym: str, acquisition: FundamentalsAcquisition) -> None:
-    """Persist a bundle for sym. Never raises."""
+def _l2_put(sym: str, acquisition: FundamentalsAcquisition) -> datetime | None:
+    """Persist a bundle and return the observed write time when available."""
+    stored_at = None
     try:
         lib = _arctic_library()
         if lib is None:
-            return
+            return None
         # pylint: disable=import-outside-toplevel
         from pandas import DataFrame, Timestamp
 
-        now = datetime.now(timezone.utc)
-        df = DataFrame({"payload": [json.dumps(acquisition.payload)]}, index=[Timestamp(now)])
-        metadata = {"fetched_at": now.isoformat()}
-        if acquisition.retrieved_at is not None:
+        stored_at = datetime.now(timezone.utc)
+        df = DataFrame({"payload": [json.dumps(acquisition.payload)]}, index=[Timestamp(stored_at)])
+        metadata = {"fetched_at": stored_at.isoformat()}
+        if acquisition.retrieved_at is not None and acquisition.retrieved_at <= stored_at:
             metadata["retrieved_at"] = acquisition.retrieved_at.isoformat()
         lib.write(sym, df, metadata=metadata, prune_previous_versions=True)
     except Exception:  # noqa: BLE001
-        return
+        pass
+    return stored_at
 
 
-def _read_through_sync(key: str, fetch) -> FundamentalsAcquisition:
+def _read_through_sync(key: str, fetch) -> _FundamentalsCacheEntry:
     """L2 get -> fetch() -> L2 put. Runs in a worker thread."""
     hit = _l2_get(key)
     if hit is not None:
         return hit
-    acquisition = FundamentalsAcquisition(fetch(), datetime.now(timezone.utc))
-    _l2_put(key, acquisition)
-    return acquisition
+    started_at = datetime.now(timezone.utc)
+    payload = fetch()
+    completed_at = datetime.now(timezone.utc)
+    retrieved_at = completed_at if started_at <= completed_at else None
+    stored_at = _l2_put(key, FundamentalsAcquisition(payload, retrieved_at)) or datetime.now(timezone.utc)
+    if retrieved_at is not None and retrieved_at > stored_at:
+        retrieved_at = None
+    return _FundamentalsCacheEntry(payload, retrieved_at, stored_at)
 
 
-async def _get_cached(key: str, fetch) -> FundamentalsAcquisition:
+async def _get_cached(key: str, fetch) -> _FundamentalsCacheEntry:
     """L1 -> single-flight lock -> L2/fetch, all under one cache key."""
     cached = _cached(key)
     if cached is not None:
@@ -172,12 +196,12 @@ async def _get_cached(key: str, fetch) -> FundamentalsAcquisition:
         cached = _cached(key)  # another coroutine may have filled it while we waited
         if cached is not None:
             return cached
-        payload = await to_thread(_read_through_sync, key, fetch)
+        entry = await to_thread(_read_through_sync, key, fetch)
         now = time.monotonic()
         for k in [k for k, (exp, _) in list(_cache.items()) if exp <= now]:
             _cache.pop(k, None)
-        _cache[key] = (now + _TTL_SECONDS, payload)
-        return payload
+        _cache[key] = (now + _TTL_SECONDS, entry)
+        return entry
 
 
 async def get_bundle_acquisition(
@@ -185,7 +209,12 @@ async def get_bundle_acquisition(
 ) -> FundamentalsAcquisition:
     """Return the same cached fundamentals bundle with its original acquisition time."""
     sym = qualify(symbol, exchange)
-    return await _get_cached(sym, lambda: _fetch_sync(sym, credentials))
+    cached = await _get_cached(sym, lambda: _fetch_sync(sym, credentials))
+    # The L1 monotonic TTL outlives wall-clock adjustments. Only the stamp depends on the wall time.
+    vintage = cached.retrieved_at
+    if vintage is not None and cached.stored_at > datetime.now(timezone.utc):
+        vintage = None
+    return FundamentalsAcquisition(cached.payload, vintage)
 
 
 async def get_bundle(

@@ -4,7 +4,8 @@
 """Source-bound checks for ownership acquisition evidence."""
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from itertools import chain, repeat
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -201,7 +202,15 @@ def test_completed_opt_in_has_original_vintage_after_legacy_l1_and_l2_hits(owner
     assert upstream.call_args.args[0] == "AAPL.US"
 
 
-@pytest.mark.parametrize("stamp", [None, "2026-11-20T04:16:46-05:00", "invalid"])
+@pytest.mark.parametrize("stamp", [
+    None,
+    "2000-01-01T00:00:00-05:00",
+    "invalid",
+    "2000-01-01X00:00:00+00:00",
+    "2000-01-01T00:00:00+00:00:00.5",
+    "2000-01-01T00:00:00",
+    "2999-01-01T00:00:00+00:00",
+])
 def test_old_or_unverified_l2_stamp_preserves_legacy_and_refuses_without_refetch(ownership_http, stamp):
     client, upstream, cache = ownership_http
     seed = get_share_statistics(client)
@@ -248,4 +257,82 @@ def test_headline_percentages_are_preserved_and_raw_unit_conflicts_precede_norma
     source, = chart_receipts(response)
     assert source["unsafe"]["unit_conflict"] is conflict
     assert source["diagnostics"] == (["unit_conflict"] if conflict else [])
+    upstream.assert_called_once()
+
+
+@pytest.fixture
+def cache_clock(monkeypatch):
+    now = datetime(2026, 11, 20, 4, 17, tzinfo=timezone.utc)
+    clock = Mock(return_value=now)
+
+    class WallClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is timezone.utc
+            return clock()
+
+    monkeypatch.setattr(F, "datetime", WallClock)
+    return now, clock
+
+
+@pytest.mark.parametrize("retrieval_offset", [-1, 1])
+def test_future_l2_write_and_rollback_refuse_without_refetch(ownership_http, cache_clock, retrieval_offset):
+    client, upstream, cache = ownership_http
+    now, _ = cache_clock
+    seed = get_share_statistics(client)
+    entry = cache.data["AAPL.US"][1]
+    entry["fetched_at"] = (now + timedelta(hours=1)).isoformat()
+    entry["retrieved_at"] = (now + timedelta(seconds=retrieval_offset)).isoformat()
+    F._reset_cache_for_tests()
+    chart = get_share_statistics(client, chart_source=True)
+    assert chart["results"] == seed["results"]
+    assert chart_receipts(chart) == []
+    upstream.assert_called_once()
+
+
+def test_invalid_l2_write_format_refuses_only_source_qualification(ownership_http, cache_clock):
+    client, upstream, cache = ownership_http
+    seed = get_share_statistics(client)
+    entry = cache.data["AAPL.US"][1]
+    entry["fetched_at"] = entry["fetched_at"].replace("T", "X")
+    F._reset_cache_for_tests()
+    chart = get_share_statistics(client, chart_source=True)
+    assert chart["results"] == seed["results"]
+    assert chart_receipts(chart) == []
+    upstream.assert_called_once()
+
+
+@pytest.mark.parametrize("elapsed", [-1, 1])
+def test_l1_rollback_before_retrieval_or_write_refuses_until_clock_recovers(ownership_http, cache_clock, elapsed):
+    client, upstream, _ = ownership_http
+    now, clock = cache_clock
+    clock.side_effect = chain((now, now, now + timedelta(seconds=2)), repeat(now + timedelta(seconds=2)))
+    seed = get_share_statistics(client)
+    valid = get_share_statistics(client, chart_source=True)
+    valid_chart, = chart_receipts(valid)
+    clock.side_effect = None
+    clock.return_value = now + timedelta(seconds=elapsed)
+    rolled_back = get_share_statistics(client, chart_source=True)
+    assert rolled_back["results"] == seed["results"]
+    assert chart_receipts(rolled_back) == []
+    clock.return_value = now + timedelta(seconds=3)
+    assert chart_receipts(get_share_statistics(client, chart_source=True)) == [valid_chart]
+    upstream.assert_called_once()
+
+
+@pytest.mark.parametrize("retrieval_offset,write_offset", [(-1, 2), (2, 1)])
+def test_fresh_inverted_vintage_is_data_only_in_both_tiers(
+    ownership_http, cache_clock, retrieval_offset, write_offset,
+):
+    client, upstream, cache = ownership_http
+    now, clock = cache_clock
+    clock.side_effect = chain((
+        now, now + timedelta(seconds=retrieval_offset), now + timedelta(seconds=write_offset),
+    ), repeat(now + timedelta(seconds=3)))
+    response = get_share_statistics(client, chart_source=True)
+    assert response["results"][0]["symbol"] == "AAPL"
+    assert chart_receipts(response) == []
+    assert "retrieved_at" not in cache.data["AAPL.US"][1]
+    F._reset_cache_for_tests()
+    assert chart_receipts(get_share_statistics(client, chart_source=True)) == []
     upstream.assert_called_once()

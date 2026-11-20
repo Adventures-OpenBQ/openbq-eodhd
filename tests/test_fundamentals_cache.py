@@ -4,6 +4,8 @@
 """Tests for the shared /fundamentals helper and its single-flight cache."""
 
 import asyncio
+from datetime import datetime, timezone
+
 import pytest
 
 from openbq_eodhd.models import _fundamentals as F
@@ -90,7 +92,8 @@ def test_l2_hit_within_ttl_skips_eodhd(monkeypatch):
     """A fresh ArcticDB entry is served without any EODHD call."""
     calls = {"n": 0}
     monkeypatch.setattr(F, "_fetch_sync", lambda s, c: (calls.__setitem__("n", calls["n"] + 1) or BUNDLE))
-    monkeypatch.setattr(F, "_l2_get", lambda sym: F.FundamentalsAcquisition(BUNDLE, None))  # L2 fresh hit
+    entry = F._FundamentalsCacheEntry(BUNDLE, None, datetime.now(timezone.utc))
+    monkeypatch.setattr(F, "_l2_get", lambda sym: entry)  # L2 fresh hit
     monkeypatch.setattr(F, "_l2_put", lambda sym, b: None)
 
     out = asyncio.run(F.get_bundle("AAPL", "US", {"eodhd_api_key": "PLACEHOLDER"}))
@@ -184,7 +187,12 @@ def test_earnings_v11_is_cached_apart_from_the_bundle(monkeypatch):
     calls = _stub_rest(monkeypatch, EARNINGS)
     l2 = {}
     monkeypatch.setattr(F, "_l2_get", l2.get)
-    monkeypatch.setattr(F, "_l2_put", l2.__setitem__)
+    def persist(key, acquisition):
+        stored_at = datetime.now(timezone.utc)
+        l2[key] = F._FundamentalsCacheEntry(acquisition.payload, acquisition.retrieved_at, stored_at)
+        return stored_at
+
+    monkeypatch.setattr(F, "_l2_put", persist)
     monkeypatch.setattr(F, "_fetch_sync", lambda symbol, credentials: BUNDLE)
 
     async def go():
