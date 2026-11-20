@@ -79,7 +79,7 @@ class EODHDEquityScreenerData(EquityScreenerData):
     dividend_yield: float | None = Field(default=None, description="Dividend yield.")
     price_change_5d: float | None = Field(
         default=None, description="Five-day price change as a fraction.",
-        json_schema_extra={"x-widget_config": {"formatterFn": "percent"}},
+        json_schema_extra={"x-widget_config": {"formatterFn": "normalizedPercent"}},
     )
     currency_symbol: str | None = Field(default=None, description="Listing currency symbol or code.")
     avg_volume_1d: float | None = Field(default=None, description="1-day average volume.")

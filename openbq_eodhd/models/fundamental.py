@@ -145,12 +145,10 @@ def _fiscal(end: date, period: str, fy_end_month: int | None) -> tuple[int, Fisc
     return year, "FY" if period == "annual" else ("Q1", "Q2", "Q3", "Q4")[quarter - 1]
 
 
-def _chart_fiscal(
-    end: date, period: str, fy_end_month: int | None,
-) -> tuple[int | None, FiscalPeriod | None]:
-    if period == "quarter" and fy_end_month is None:
-        return None, None
-    return _fiscal(end, period, fy_end_month)
+def _chart_fiscal(period: str) -> tuple[None, FiscalPeriod | None]:
+    # A nominal year-end month cannot identify fiscal years or numbered
+    # quarters for week-based calendars. The selected bucket proves the kind.
+    return None, "FY" if period == "annual" else None
 
 
 def _transform(
@@ -182,7 +180,7 @@ def _normalize_statement_entries(
             end = iso_date(entry.get("date"))
             if end is None:
                 continue
-            fiscal_year, fiscal_period = _chart_fiscal(end, period, fiscal_year_end)
+            fiscal_year, fiscal_period = _chart_fiscal(period)
         else:
             end_ts = to_datetime(entry.get("date"), errors="coerce")
             if isna(end_ts):
@@ -318,7 +316,7 @@ def _annotated_income(
     entries.sort(key=lambda item: (item[0] is not None, item[0] or date.min), reverse=True)
     selected = entries[:query.limit] if query.limit else entries
     fiscal_labels = {
-        day: _chart_fiscal(day, query.period, acquisition.fiscal_year_end)
+        day: _chart_fiscal(query.period)
         for _, raw in selected if (day := iso_date(raw.get("date"))) is not None
     }
     mapped_lines = set(INCOME_MAP.values())

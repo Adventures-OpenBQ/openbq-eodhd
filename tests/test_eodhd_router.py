@@ -139,7 +139,7 @@ def test_widget_generator_formats_five_day_change_as_a_fractional_percent():
         w for w in widgets.values() if w["endpoint"].endswith("/eodhd/equity/screener")
     )
     columns = {column["field"]: column for column in screener["data"]["table"]["columnsDefs"]}
-    assert columns["price_change_5d"]["formatterFn"] == "percent"
+    assert columns["price_change_5d"]["formatterFn"] == "normalizedPercent"
     assert columns["currency_symbol"]["cellDataType"] == "text"
 
 
@@ -220,7 +220,11 @@ def test_chart_source_uses_the_normal_http_envelope(prefix, chart_source_http):
     assert income.json()["results"][0]["net_income"] == 20
     legacy_income = get("/equity/fundamental/income", symbol="HSBA.LSE", chart_source=False, limit=1)
     assert legacy_income.status_code == 200, legacy_income.text
-    assert legacy_income.json()["results"] == income.json()["results"]
+    legacy_row, = legacy_income.json()["results"]
+    chart_row, = income.json()["results"]
+    assert legacy_row["fiscal_year"] == 2026
+    assert chart_row.get("fiscal_year") is None
+    assert {**chart_row, "fiscal_year": 2026} == legacy_row
     assert "results_metadata" not in legacy_income.json()["extra"]
     assert sdk.stock_market_screener.call_count == 4
     assert sdk.get_historical_dividends_data.call_count == 2

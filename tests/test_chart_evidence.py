@@ -343,3 +343,23 @@ def test_income_period_limit_preserves_malformed_acquisition_identity(
     assert receipt["raw_count"] == 1
     assert [row.period_ending for row in result.result] == expected_delivered_periods
     assert receipt["delivered_count"] == len(expected_delivered_periods)
+
+
+@pytest.mark.parametrize(("frequency", "bucket", "kind", "label"), [
+    ("annual", "yearly", "FY", "FY"), ("quarter", "quarterly", "FQ", None),
+])
+def test_chart_snapshot_week_based_boundary_keeps_only_proven_labels(frequency, bucket, kind, label):
+    from openbq_eodhd.models._chart_evidence import ExplicitSnapshotScale
+    from openbq_eodhd.models.fundamental import normalize_income_snapshot
+
+    end = date(2025, 2, 1)
+    query = EODHDIncomeStatementFetcher.transform_query(
+        {"symbol": "HSBA.LSE", "period": frequency, "chart_source": True}
+    )
+    scale = ExplicitSnapshotScale(qualified_symbol="HSBA.LSE", multiplier=1000, reference="fixture")
+    section = {"currency_symbol": "USD", bucket: {str(end): dict(INCOME_COMPLETE, date=str(end))}}
+    result = normalize_income_snapshot(query, section, scale, covered_periods={end}, fiscal_year_end=1)
+    period = result.metadata["chart_evidence"]["periods"][0]
+    assert (period["period_end"], period["period_kind"]) == (str(end), kind)
+    assert (period["fiscal_year"], period["fiscal_period"]) == (None, label)
+    assert (result.result[0].fiscal_year, result.result[0].fiscal_period) == (None, label)

@@ -110,8 +110,9 @@ conflict with a snapshot's block or period declaration is a refusal fact.
 
 `period_kind` is `FY` or `FQ`. A `periods` entry has the actual `period_end`
 and the kind plus nullable `fiscal_year` and `fiscal_period`. The chart
-source leaves numbered fiscal quarter labels null when the issuer fiscal
-year end is unknown. `requested_limit` is the limit in the completed query
+source retains the bucket kind and actual end date. Its nominal fiscal
+year-end month cannot prove the fiscal year or numbered quarter, so those
+labels stay null. `requested_limit` is the limit in the completed query
 and may be null. `available_period_count` counts the upstream bucket before
 that limit. The provider orders by validated bucket dates before applying
 the limit. A selected record without a valid body date, or any unorderable
@@ -378,7 +379,7 @@ The selected period has `revenue: 100`, `cost_of_revenue: 40`, `gross_profit: 60
     {
       "period_end": "2026-06-30",
       "period_kind": "FY",
-      "fiscal_year": 2026,
+      "fiscal_year": null,
       "fiscal_period": "FY",
       "record_coverage": "full-record",
       "declared_currency": "USD",
