@@ -162,3 +162,29 @@ def test_exact_repeats_are_disclosed_without_overstating_conflicts():
     receipt = result.metadata["chart_sources"]["receipts"][0]
     assert result.result == rows and receipt["exact_repeats"] == 1 and not receipt["diagnostics"]
     assert (receipt["raw_count"], receipt["normalized_count"], receipt["delivered_count"]) == (7, 6, 6)
+
+
+@pytest.mark.parametrize("field,left,right,other_flag", [
+    ("currency", True, 1, "unit_conflict"),
+    ("currency", 0, False, "unit_conflict"),
+    ("extra", True, 1, "identity_conflict"),
+    ("extra", {"panel": [0, {"reported": False}]}, {"panel": [0, {"reported": 0}]}, "identity_conflict"),
+    ("extra", [{"counts": [1.0]}], [{"counts": [True]}], "identity_conflict"),
+])
+def test_duplicate_conflicts_compare_json_categories_in_every_raw_field(field, left, right, other_flag):
+    m, rows, _ = prepared()
+    result = prepare(m, [dict(rows[0], **{field: left}), dict(rows[0], **{field: right}), rows[1]])
+    receipt = result.metadata["chart_sources"]["receipts"][0]
+    assert set(receipt["diagnostics"]) == {"duplicate_conflict", other_flag}
+    assert result.result == [rows[1]]
+    assert (receipt["raw_count"], receipt["delivered_count"], receipt["exact_repeats"]) == (3, 1, 0)
+
+
+def test_json_numbers_compare_by_value_in_valid_and_malformed_repeated_rows():
+    m, rows, _ = prepared()
+    result = prepare(m, [rows[0], dict(rows[0], value=1.0),
+                         dict(rows[1], extra={"count": [1]}), dict(rows[1], extra={"count": [1.0]})])
+    receipt = result.metadata["chart_sources"]["receipts"][0]
+    assert receipt["diagnostics"] == ["identity_conflict"]
+    assert result.result == [rows[0]]
+    assert (receipt["raw_count"], receipt["delivered_count"], receipt["exact_repeats"]) == (4, 1, 1)

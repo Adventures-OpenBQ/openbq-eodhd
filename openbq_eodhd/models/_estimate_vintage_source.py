@@ -172,6 +172,26 @@ _ROW_FIELDS = set("issuer entity_ref currency unit basis basis_ref vintage obser
 _KEY_FIELDS = ("issuer", "target_start", "target_end", "target_kind", "vintage")
 
 
+def _same_json(left, right):
+    """Compare whole raw JSON values, keeping booleans distinct from numbers at every depth."""
+    pairs = [(left, right)]
+    while pairs:
+        a, b = pairs.pop()
+        if a is b:
+            continue
+        if isinstance(a, dict):
+            if not isinstance(b, dict) or a.keys() != b.keys():
+                return False
+            pairs.extend((value, b[key]) for key, value in a.items())
+        elif isinstance(a, list):
+            if not isinstance(b, list) or len(a) != len(b):
+                return False
+            pairs.extend(zip(a, b))
+        elif isinstance(a, bool) != isinstance(b, bool) or a != b:
+            return False
+    return True
+
+
 def prepare_estimate_vintage_snapshot(manifest: dict, raw_rows: list):
     """Scan every original row with its acquisition manifest before exclusion or exact-repeat collapse."""
     source = Manifest.model_validate(manifest)
@@ -205,10 +225,9 @@ def prepare_estimate_vintage_snapshot(manifest: dict, raw_rows: list):
         if all(isinstance(k, str) for k in key):
             # Even a malformed first row participates in conflict detection. bool is not a JSON number.
             previous = seen.setdefault(key, row)
-            different = previous != row or isinstance(previous.get("value"), bool) != isinstance(row.get("value"), bool)
-            if different:
+            if not _same_json(previous, row):
                 unsafe.add("duplicate_conflict")
-                if key in accepted and row != accepted[key]:
+                if key in accepted and not _same_json(accepted[key], row):
                     issues.add("duplicate_conflict")
         if issues:
             unsafe.update(issues)
