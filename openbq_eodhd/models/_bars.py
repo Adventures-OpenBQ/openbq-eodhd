@@ -10,6 +10,7 @@ logic once (via the official `eodhd` SDK); each asset-class fetcher supplies
 its own symbol qualification.
 """
 
+from collections.abc import Callable
 from datetime import datetime, time, timezone
 from typing import Any
 
@@ -22,6 +23,7 @@ from openbq_eodhd.models._client import get_client, raise_sdk_error
 INTRADAY_MAP = {"1m": "1m", "5m": "5m", "1h": "1h"}
 EOD_PERIOD_MAP = {"1d": "d", "1W": "w", "1M": "m"}
 INTERVAL_CHOICES = list(INTRADAY_MAP) + list(EOD_PERIOD_MAP)
+RawBarObserver = Callable[[str, object, datetime], None]
 
 
 def to_unix(day: Any, *, end_of_day: bool) -> int:
@@ -36,14 +38,21 @@ async def fetch_bars(
     start_date: Any,
     end_date: Any,
     credentials: dict[str, str] | None,
+    *,
+    raw_observer: RawBarObserver | None = None,
 ) -> list[dict]:
-    """Fetch raw bars for already-qualified symbols (e.g. AAPL.US, BTC-USD.CC)."""
+    """Fetch bars for qualified symbols and optionally observe the original SDK payloads.
+
+    An observer may reject a payload before the shared bar parser handles it.
+    An observed empty acquisition reaches the caller for qualification.
+    """
     # The official SDK is synchronous (requests); run it off the event loop.
     # pylint: disable=import-outside-toplevel
     from asyncio import to_thread
 
     return await to_thread(
-        _fetch_bars_sync, interval, symbols, start_date, end_date, credentials
+        _fetch_bars_sync, interval, symbols, start_date, end_date, credentials,
+        raw_observer=raw_observer,
     )
 
 
@@ -53,6 +62,8 @@ def _fetch_bars_sync(
     start_date: Any,
     end_date: Any,
     credentials: dict[str, str] | None,
+    *,
+    raw_observer: RawBarObserver | None = None,
 ) -> list[dict]:
     client = get_client(credentials)
     intraday = interval in INTRADAY_MAP
@@ -80,16 +91,20 @@ def _fetch_bars_sync(
                 raise
             except Exception as exc:
                 raise_sdk_error(exc, f"bars for '{sym}'")
+            if raw_observer is not None:
+                raw_observer(sym, response, datetime.now(timezone.utc))
             if isinstance(response, dict):
                 # A 200 response that isn't a bar list is an error payload.
                 msg = response.get("errors") or response.get("message") or response
                 raise UnauthorizedError(f"EODHD ({sym}): {msg}")
             for bar in response or []:
                 if multiple:
+                    if raw_observer is not None:
+                        bar = dict(bar)
                     bar["_symbol"] = sym
                 results.append(bar)
 
-    if not results:
+    if not results and raw_observer is None:
         raise EmptyDataError("The request was returned empty.")
     return results
 

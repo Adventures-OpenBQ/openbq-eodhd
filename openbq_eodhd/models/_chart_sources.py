@@ -10,7 +10,8 @@ from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ChartSourceKind = Literal[
-    "news", "ownership", "overlay", "estimate-vintages", "market-map", "etf-hierarchy", "metric"
+    "news", "ownership", "overlay", "estimate-vintages", "market-map", "etf-hierarchy", "metric",
+    "daily-price",
 ]
 Count = Annotated[int, Field(ge=0, le=2**53 - 1)]
 

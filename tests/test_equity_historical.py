@@ -149,3 +149,11 @@ class TestFetcher:
         assert len(results) == 2
         assert results[0].symbol == "AAPL.US"
         assert results[1].symbol == "MSFT.US"
+
+    def test_transform_query_disabled_chart_source_keeps_legacy_default_dates(self):
+        query = EODHDEquityHistoricalFetcher.transform_query({
+            "symbol": "AAPL", "chart_source": "false",
+        })
+        assert query.chart_source is False
+        assert query.start_date is not None
+        assert query.end_date is not None
