@@ -325,3 +325,39 @@ def test_plain_route_retains_rows_without_receipt_or_duplicate_filter(fetch):
 def test_plain_route_retains_empty_data_error(fetch):
     with pytest.raises(EmptyDataError):
         fetch([], chart_source=False)
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [{"interval": "1W"}, {"period": "w"}, {"unit": "cents"}, {"currency": "EUR"}],
+)
+@pytest.mark.parametrize("dropped", [False, True])
+def test_contradictory_raw_declarations_deny_daily_proof(fetch, declaration, dropped):
+    dates = [TUESDAY, WEDNESDAY, THURSDAY, "2026-10-22", "2026-10-29", "2026-11-05"]
+    raw = [bar(day, 100, interval="1d", period="d", currency="USD", unit="dollars") for day in dates]
+    raw[-1].update(declaration)
+    if dropped:
+        raw[-1]["close"] = None
+    result, _ = fetch(raw)
+    receipt = receipt_of(result)
+    assert receipt["delivered_count"] == (5 if dropped else 6)
+    assert receipt["unsafe"]["invalid_response"]
+    assert receipt["diagnostics"] == ["invalid_response"]
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_sparse_denominations_are_reconciled_within_each_requested_listing(fetch, conflict):
+    def observations(*, symbol, **kwargs):
+        currency, unit = ("USD", "dollars") if symbol == "MCD.US" else ("GBP", "pounds")
+        return [
+            bar(TUESDAY, interval="1d", currency=currency, unit=unit),
+            bar("2026-10-27"),
+            bar("2026-11-10", period="d", currency=currency,
+                unit="pence" if conflict and symbol == "AAPL.US" else unit),
+        ]
+
+    result, sdk = fetch(observations, symbol="MCD.US,AAPL.US")
+    assert receipt_of(result)["diagnostics"] == (["invalid_response"] if conflict else [])
+    assert [c.kwargs["symbol"] for c in sdk.get_eod_historical_stock_market_data.call_args_list] == [
+        "MCD.US", "AAPL.US",
+    ]

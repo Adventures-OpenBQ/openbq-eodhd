@@ -156,6 +156,23 @@ def _matches_listing(bar: dict, symbol: str) -> bool:
     return True
 
 
+def _declarations_agree(bar: dict, denominations: dict[str, str]) -> bool:
+    """Cross-check explicit declarations without inferring missing dimensions or sessions."""
+    for key, value in bar.items():
+        name = key.lower()
+        if value is None:
+            continue
+        if name == "interval" and value != "1d" or name == "period" and value != "d":
+            return False
+        if name in ("currency", "unit"):
+            # Currency case can distinguish major and minor units (GBP and GBp).
+            if not isinstance(value, str) or not value.strip():
+                return False
+            if denominations.setdefault(name, value) != value:
+                return False
+    return True
+
+
 def _valid_adjusted_close(value: Any) -> bool:
     if type(value) not in (int, float) or value <= 0:
         return False
@@ -195,7 +212,10 @@ class DailyPriceAcquisition:
         if raw and not any("adjusted_close" in bar for bar in raw):
             facts.flags.add("missing_adjusted_basis")
 
+        denominations: dict[str, str] = {}
         for bar in raw:
+            if not _declarations_agree(bar, denominations):
+                facts.flags.add("invalid_response")
             identity_known = _matches_listing(bar, symbol)
             if not identity_known:
                 facts.flags.add("identity_conflict")
