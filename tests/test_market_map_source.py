@@ -180,3 +180,47 @@ def test_receipt_disallows_impossible_pre_drop_counts(case):
         r.update(raw_count=0, rejected_count=0)
     with pytest.raises(ValidationError):
         IndexSource.model_validate(r)
+
+
+def test_zero_bound_fixture_round_trips_with_correctly_rounded_total():
+    m, rows, receipt = fixture("IndexZeroBound")
+    assert receipt["rounding_bound_fraction"] == 0 and receipt["diagnostics"] == []
+    assert [r["area"] for r in rows] == [.08, .69, .23]
+    assert prepare(m, rows) == (rows, receipt)
+    # Half an ulp rounds to even at one. The smallest additional observation breaks the tie.
+    for weights, excess in [([1., 2**-54, 2**-54], False), ([1., 2**-53, 5e-324], True)]:
+        observed = [dict(r, area=w) for r, w in zip(rows, weights)]
+        assert prepare(m, observed)[1]["unsafe"]["excess_weight"] is excess
+
+
+@pytest.mark.parametrize("other_first", [True, False])
+def test_distinct_acquired_keys_always_contribute_to_raw_index_total(other_first):
+    m, rows, _ = fixture("Index")
+    keyed = [("ALFA.US", rows[0]), ("OTHER.US", rows[0])]
+    if other_first:
+        keyed.reverse()
+    delivered, r = prepare(m, dict([*keyed, ("BETA.US", rows[1])]))
+    assert delivered == rows
+    assert set(r["diagnostics"]) == {"identity_conflict", "duplicate_conflict", "excess_weight"}
+    assert (r["raw_count"], r["normalized_count"], r["rejected_count"], r["exact_repeats"]) == (3, 2, 1, 0)
+
+
+@pytest.mark.parametrize("reverse", [True, False])
+def test_repeated_malformed_weight_is_counted_once_in_either_order(reverse):
+    m, rows, _ = fixture("Index")
+    m["coverage"] = "partial"
+    bad = dict(rows[0], area=.4, sector=False)
+    raw = [dict(rows[0], area=.3), bad, bad]
+    _, r = prepare(m, list(reversed(raw)) if reverse else raw)
+    assert r["rejected_count"] == 2 and r["unsafe"]["duplicate_conflict"] and not r["unsafe"]["excess_weight"]
+
+
+@pytest.mark.parametrize("zero,negative", [(0, 0), (1, 2)])
+def test_index_excess_requires_some_possible_positive_raw_area(zero, negative):
+    from openbq_eodhd.models._market_map_source import IndexSource
+    _, _, r = fixture("Index")
+    r.update(coverage="partial", raw_count=zero + negative, normalized_count=0, delivered_count=0, listing_keys=[],
+             diagnostics=["excess_weight"], excluded_areas={"zero": zero, "negative": negative, "invalid": 0})
+    r["unsafe"]["excess_weight"] = True
+    with pytest.raises(ValidationError):
+        IndexSource.model_validate(r)

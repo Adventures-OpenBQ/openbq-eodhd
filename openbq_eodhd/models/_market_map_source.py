@@ -134,6 +134,7 @@ class _Accounting(ChartSourceReceipt):
                 or not all(_symbol(k) for k in self.listing_keys) or flags != set(self.diagnostics)
                 or (self.exact_repeats and self.raw_count == self.exact_repeats + self.rejected_count)
                 or (self.unsafe.duplicate_conflict and self.raw_count < 2)
+                or (self.unsafe.excess_weight and not (self.delivered_count or self.rejected_count or self.excluded_areas.invalid))
                 or (self.rejected_count and not flags - {"excess_weight"})
                 or (flags - {"membership_conflict", "excess_weight"} and not self.rejected_count)):
             raise ValueError("Contradictory coordinates, raw counts or diagnostics")
@@ -194,7 +195,7 @@ def prepare_market_map_snapshot(manifest: dict, raw_rows: list | dict):
         raise ValueError("Expected the original acquisition")
     members = set(source.members) if isinstance(source, IndexManifest) else None
     pairs = raw_rows.items() if isinstance(raw_rows, dict) else ((None, row) for row in raw_rows)
-    seen, accepted = {}, {}
+    seen, accepted, positive_observations = {}, {}, {}
     flags, raw_positive, delivered = set(), [], []
     exclusions = {"zero": 0, "negative": 0, "invalid": 0}
     rejected = repeats = 0
@@ -203,24 +204,29 @@ def prepare_market_map_snapshot(manifest: dict, raw_rows: list | dict):
         issues = _row_issues(source, row, members, key)
         listing = row.get("listing")
         # Both the original object key and embedded identity witness conflicts, even on malformed rows.
-        exact_seen = False
         for coord in {s for s in (key, listing) if _symbol(s)}:
             if coord in seen:
                 prior_key, prior_raw = seen[coord]
-                if prior_key == key and _same_json(prior_raw, raw):
-                    exact_seen = True
-                else:
+                if prior_key != key or not _same_json(prior_raw, raw):
                     flags.add("duplicate_conflict")
             else:
                 seen[coord] = (key, raw)
         previous = accepted.get(listing) if _symbol(listing) else None
-        same_accepted = previous is not None and _same_json(previous, row)
+        same_accepted = previous is not None and previous[0] == key and _same_json(previous[1], row)
         if previous is not None and not same_accepted:
             issues.add("duplicate_conflict")
         area = row.get("area")
-        if (members is not None and not exact_seen and not same_accepted and type(area) in (int, float) and area > 0):
+        if members is not None and type(area) in (int, float) and area > 0:
             # A single contribution of 2 proves excess. This also handles unbounded JSON integers.
-            raw_positive.append(min(area, 2))
+            # Every key in an original object is distinct. In an array collapse full repeats
+            # of a qualified observation, including repeats of a rejected row in any order.
+            if key is not None or not _symbol(listing):
+                raw_positive.append(min(area, 2))
+            else:
+                variants = positive_observations.setdefault((listing, area), [])
+                if not any(_same_json(previous_row, row) for previous_row in variants):
+                    variants.append(row)
+                    raw_positive.append(min(area, 2))
         if issues:
             flags.update(issues)
             rejected += 1
@@ -228,7 +234,7 @@ def prepare_market_map_snapshot(manifest: dict, raw_rows: list | dict):
         if same_accepted:
             repeats += 1
             continue
-        accepted[listing] = row
+        accepted[listing] = (key, row)
         if not _finite(area):
             exclusions["invalid"] += 1
         elif area < 0:
