@@ -202,3 +202,54 @@ def test_same_payload_instance_is_still_a_duplicate():
     assert len(result.result) == 1
     receipt, = result.metadata["chart_sources"]["receipts"]
     assert receipt["diagnostics"] == ["exact_duplicate"]
+
+
+@pytest.mark.parametrize(("url", "accepted"), [
+    ("https://news.example/article?edition=2#section", True),
+    ("HTTP://WWW.EXAMPLE.COM.:8443/story", True),
+    ("http://192.0.2.1/story", True),
+    ("https://[2001:db8::1]:443/story", True),
+    ("https://news.example/crónica", True),
+    ("https://999.999.999.999/article", False),
+    ("http://192.00.2.1/story", False),
+    ("http://0x7f.1/story", False),
+    ("https://news.123/article", False),
+    ("https://news..example/article", False),
+    ("https://-news.example/article", False),
+    ("https://xn--bcher-kva.example/article", False),
+    ("https://[2001:db8:::1]/story", False),
+    ("https://news.example:65536/story", False),
+    ("https://user:pass@news.example/story", False),
+    ("https://news.example/story\u0085", False),
+    ("https://news.example/story\ufeff", False),
+])
+def test_news_original_link_matches_the_client_identity_contract(url, accepted):
+    from datetime import date
+
+    from pydantic import ValidationError
+
+    from openbq_eodhd.models._news_chart_source import NewsCoordinate
+
+    wire = {"article_id": url, "utc_day": date(2024, 2, 29), "scored": True}
+    if accepted:
+        assert NewsCoordinate.model_validate(wire).article_id == url
+    else:
+        with pytest.raises(ValidationError):
+            NewsCoordinate.model_validate(wire)
+
+
+def test_mounted_news_retains_sibling_and_raw_identity_failure_for_a_malformed_host(news_http):
+    client, rest = news_http
+    rest.return_value = [NEUTRAL, dict(UNSCORED, link="https://999.999.999.999/article")]
+
+    response = client.get("/api/v1/eodhd/news/company", params={"symbol": "AAPL", "chart_source": True})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [row["url"] for row in payload["results"]] == [NEUTRAL["link"]]
+    receipt, = payload["extra"]["results_metadata"]["chart_sources"]["receipts"]
+    assert (receipt["raw_count"], receipt["normalized_count"], receipt["delivered_count"]) == (2, 1, 1)
+    assert receipt["unsafe"]["invalid_identity"] is True
+    assert receipt["diagnostics"] == ["invalid_identity"]
+    assert receipt["coordinates"] == [{"article_id": NEUTRAL["link"], "utc_day": "2024-02-29", "scored": True}]
+    rest.assert_called_once()

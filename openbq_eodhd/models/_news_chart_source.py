@@ -6,8 +6,8 @@
 import json
 import re
 from datetime import date, datetime, timezone
+from ipaddress import IPv6Address
 from typing import Annotated, Literal
-from urllib.parse import urlsplit
 
 from openbb_core.provider.utils.errors import UnauthorizedError
 from pydantic import Field, field_validator, model_validator
@@ -19,8 +19,13 @@ _TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
     r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])",
 )
-_LINK = re.compile(r"^https?://(?:[a-z0-9.-]+|\[[0-9a-f:]+\])(?::[0-9]+)?(?:[/?#]|$)", re.I | re.ASCII)
-_UNSAFE_LINK_CHAR = re.compile(r"[\s\x00-\x1f\x7f\\]")
+# Match the portable authority rules in BDOBB newsEvidence.ts.
+_LINK = re.compile(r"^https?://([a-z0-9.-]+|\[[0-9a-f:]+\])(?::([0-9]+))?(?:[/?#]|$)", re.I | re.ASCII)
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.I | re.ASCII)
+_IPV4_OCTET = re.compile(r"0|[1-9][0-9]{0,2}")
+_UNSAFE_LINK_CHAR = re.compile(
+    r"[\x00-\x20\x7f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff\ud800-\udfff\\]",
+)
 
 Polarity = Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)]
 Diagnostic = Literal[
@@ -34,13 +39,33 @@ def qualified_news_symbol(value: object) -> bool:
 
 
 def _article_url(value: object) -> bool:
-    if not isinstance(value, str) or len(value) > 4096 or _UNSAFE_LINK_CHAR.search(value) or not _LINK.match(value):
+    if not isinstance(value, str) or len(value) > 4096 or _UNSAFE_LINK_CHAR.search(value):
         return False
-    try:
-        parsed = urlsplit(value)
-        return bool(parsed.hostname) and (parsed.port is None or 0 <= parsed.port <= 65535)
-    except ValueError:
+    if len(value.encode("utf-16-le")) > 8192:
         return False
+    authority = _LINK.match(value)
+    if not authority:
+        return False
+    host, port = authority.groups()
+    if port:
+        significant_digits = port.lstrip("0")
+        if len(significant_digits) > 5 or int(significant_digits or "0") > 65535:
+            return False
+    if host.startswith("["):
+        try:
+            IPv6Address(host[1:-1])
+        except ValueError:
+            return False
+        return True
+    domain = host.removesuffix(".")
+    labels = domain.lower().split(".")
+    if re.match(r"[a-z]", labels[-1], re.ASCII):
+        return len(domain) <= 253 and all(
+            _DNS_LABEL.fullmatch(label) and not label.startswith("xn--") for label in labels
+        )
+    return host == domain and len(labels) == 4 and all(
+        _IPV4_OCTET.fullmatch(label) and int(label) <= 255 for label in labels
+    )
 
 
 def _publication_time(value: object) -> tuple[datetime, date] | None:
