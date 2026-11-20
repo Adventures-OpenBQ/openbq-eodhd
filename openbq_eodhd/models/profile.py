@@ -9,6 +9,7 @@ KeyExecutives (General.Officers).
 from datetime import date as dateType
 from typing import Any
 
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.equity_info import (
     EquityInfoData, EquityInfoQueryParams,
@@ -23,6 +24,8 @@ from openbb_core.provider.utils.errors import EmptyDataError
 from pydantic import Field
 
 from openbq_eodhd.models import _fundamentals as F
+from openbq_eodhd.models._chart_sources import ChartSourceEnvelope, annotate_chart_sources
+from openbq_eodhd.models._ownership_chart_source import OwnershipLiveBarsSource, share_statistics_source
 
 
 def _date(v):
@@ -117,6 +120,7 @@ class EODHDEquityInfoFetcher(Fetcher[EODHDEquityInfoQueryParams, list[EODHDEquit
 class EODHDShareStatisticsQueryParams(ShareStatisticsQueryParams):
     """EODHD Share Statistics Query."""
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols.")
+    chart_source: bool = Field(default=False, description="Include ownership evidence when the acquired headline source qualifies.")
 
 
 class EODHDShareStatisticsData(ShareStatisticsData):
@@ -144,18 +148,29 @@ class EODHDShareStatisticsFetcher(
         return EODHDShareStatisticsQueryParams(**params)
 
     @staticmethod
-    async def aextract_data(query, credentials, **kwargs) -> dict:  # pylint: disable=unused-argument
+    async def aextract_data(query, credentials, **kwargs) -> dict | F.FundamentalsAcquisition:  # pylint: disable=unused-argument
+        if query.chart_source:
+            return await F.get_bundle_acquisition(query.symbol, query.exchange, credentials)
         return await F.get_bundle(query.symbol, query.exchange, credentials)
 
     @staticmethod
-    def transform_data(query, data: dict, **kwargs) -> list[EODHDShareStatisticsData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: dict | F.FundamentalsAcquisition, **kwargs,
+    ) -> list[EODHDShareStatisticsData] | AnnotatedResult[list[EODHDShareStatisticsData]]:
+        source = None
+        if isinstance(data, F.FundamentalsAcquisition):
+            if query.chart_source:
+                source = share_statistics_source(
+                    data.payload, F.qualify(query.symbol, query.exchange), query.exchange, data.retrieved_at,
+                )
+            data = data.payload
         stats = F.shares_stats(data)
         if not stats:
             raise EmptyDataError(f"EODHD has no share statistics for '{query.symbol}'.")
         tech = F.technicals(data)
         outstanding = stats.get("SharesOutstanding")
         floating = stats.get("SharesFloat")
-        return [EODHDShareStatisticsData.model_validate({
+        values = {
             "symbol": query.symbol.upper(),
             "date": _date(F.general(data).get("UpdatedAt")),
             "outstanding_shares": outstanding,
@@ -169,7 +184,13 @@ class EODHDShareStatisticsFetcher(
             "shares_short_prior_month": stats.get("SharesShortPriorMonth") or tech.get("SharesShortPriorMonth"),
             "short_ratio": stats.get("ShortRatio") or tech.get("ShortRatio"),
             "short_percent_float": stats.get("ShortPercentFloat") or tech.get("ShortPercent"),
-        })]
+        }
+        if source is None:
+            return [EODHDShareStatisticsData.model_validate(values)]
+        receipt, headlines = source
+        values.update(headlines, symbol=receipt.issuer)
+        rows = [EODHDShareStatisticsData.model_validate(values)]
+        return annotate_chart_sources(rows, ChartSourceEnvelope[OwnershipLiveBarsSource](receipts=[receipt]))
 
 
 class EODHDKeyExecutivesQueryParams(KeyExecutivesQueryParams):

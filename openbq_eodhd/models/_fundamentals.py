@@ -16,7 +16,8 @@ import json
 import os
 import time
 from asyncio import Lock, to_thread
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from openbb_core.app.model.abstract.error import OpenBBError
@@ -27,7 +28,16 @@ from openbq_eodhd.models._client import get_client, raise_sdk_error, rest_json, 
 _TTL_SECONDS = 120.0            # L1 in-process burst-coalescing TTL
 _L2_LIBRARY = "eodhd_fundamentals_cache"
 _EARNINGS_V11_SUFFIX = "#earnings-v1.1"
-_cache: dict[str, tuple[float, dict]] = {}
+
+
+@dataclass(frozen=True)
+class FundamentalsAcquisition:
+    payload: dict
+    # UTC completion of the upstream fetch. Legacy cache records may lack it.
+    retrieved_at: datetime | None
+
+
+_cache: dict[str, tuple[float, FundamentalsAcquisition]] = {}
 _locks: dict[str, Lock] = {}
 
 
@@ -55,7 +65,7 @@ def _get_lock(sym: str) -> Lock:
     return lock
 
 
-def _cached(sym: str) -> dict | None:
+def _cached(sym: str) -> FundamentalsAcquisition | None:
     hit = _cache.get(sym)
     if hit is None:
         return None
@@ -97,25 +107,34 @@ def _arctic_library():
         return None
 
 
-def _l2_get(sym: str) -> dict | None:
+def _l2_get(sym: str) -> FundamentalsAcquisition | None:
     """Fresh cached bundle for sym, or None. Never raises."""
     try:
         lib = _arctic_library()
         if lib is None or not lib.has_symbol(sym):
             return None
-        meta = (lib.read_metadata(sym).metadata or {})
+        # Read the metadata paired with this exact payload version.
+        cached = lib.read(sym)
+        meta = cached.metadata or {}
         fetched = meta.get("fetched_at")
         if not fetched:
             return None
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(fetched)).total_seconds()
+        stored_at = datetime.fromisoformat(fetched)
+        age = (datetime.now(timezone.utc) - stored_at).total_seconds()
         if age > _l2_ttl_seconds():
             return None
-        return json.loads(lib.read(sym).data["payload"].iloc[0])
+        try:
+            retrieved_at = datetime.fromisoformat(meta.get("retrieved_at"))
+        except (TypeError, ValueError):
+            retrieved_at = None
+        if retrieved_at is not None and (retrieved_at.utcoffset() != timedelta(0) or retrieved_at > stored_at):
+            retrieved_at = None
+        return FundamentalsAcquisition(json.loads(cached.data["payload"].iloc[0]), retrieved_at)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _l2_put(sym: str, bundle: dict) -> None:
+def _l2_put(sym: str, acquisition: FundamentalsAcquisition) -> None:
     """Persist a bundle for sym. Never raises."""
     try:
         lib = _arctic_library()
@@ -125,23 +144,26 @@ def _l2_put(sym: str, bundle: dict) -> None:
         from pandas import DataFrame, Timestamp
 
         now = datetime.now(timezone.utc)
-        df = DataFrame({"payload": [json.dumps(bundle)]}, index=[Timestamp(now)])
-        lib.write(sym, df, metadata={"fetched_at": now.isoformat()}, prune_previous_versions=True)
+        df = DataFrame({"payload": [json.dumps(acquisition.payload)]}, index=[Timestamp(now)])
+        metadata = {"fetched_at": now.isoformat()}
+        if acquisition.retrieved_at is not None:
+            metadata["retrieved_at"] = acquisition.retrieved_at.isoformat()
+        lib.write(sym, df, metadata=metadata, prune_previous_versions=True)
     except Exception:  # noqa: BLE001
         return
 
 
-def _read_through_sync(key: str, fetch) -> dict:
+def _read_through_sync(key: str, fetch) -> FundamentalsAcquisition:
     """L2 get -> fetch() -> L2 put. Runs in a worker thread."""
     hit = _l2_get(key)
     if hit is not None:
         return hit
-    payload = fetch()
-    _l2_put(key, payload)
-    return payload
+    acquisition = FundamentalsAcquisition(fetch(), datetime.now(timezone.utc))
+    _l2_put(key, acquisition)
+    return acquisition
 
 
-async def _get_cached(key: str, fetch) -> dict:
+async def _get_cached(key: str, fetch) -> FundamentalsAcquisition:
     """L1 -> single-flight lock -> L2/fetch, all under one cache key."""
     cached = _cached(key)
     if cached is not None:
@@ -158,11 +180,18 @@ async def _get_cached(key: str, fetch) -> dict:
         return payload
 
 
-async def get_bundle(
-    symbol: str, exchange: str, credentials: dict[str, str] | None
-) -> dict:
+async def get_bundle_acquisition(
+    symbol: str, exchange: str, credentials: dict[str, str] | None,
+) -> FundamentalsAcquisition:
+    """Return the same cached fundamentals bundle with its original acquisition time."""
     sym = qualify(symbol, exchange)
     return await _get_cached(sym, lambda: _fetch_sync(sym, credentials))
+
+
+async def get_bundle(
+    symbol: str, exchange: str, credentials: dict[str, str] | None,
+) -> dict:
+    return (await get_bundle_acquisition(symbol, exchange, credentials)).payload
 
 
 def _fetch_earnings_v11_sync(sym: str, credentials: dict[str, str] | None) -> dict:
@@ -181,9 +210,9 @@ async def get_earnings_v11(
 ) -> dict:
     """v1.1 `Earnings` object, cached apart from the bundle (own L1/L2 key)."""
     sym = qualify(symbol, exchange)
-    return await _get_cached(
+    return (await _get_cached(
         sym + _EARNINGS_V11_SUFFIX, lambda: _fetch_earnings_v11_sync(sym, credentials)
-    )
+    )).payload
 
 
 def _rows(section: Any) -> list[dict]:
