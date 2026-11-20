@@ -9,9 +9,9 @@ countries, e.g. "North America", "United Kingdom"); EtfCountries maps those
 rows as-is rather than inventing a per-country split EODHD does not have.
 """
 
-from datetime import date as dateType
 from typing import Any
 
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.etf_countries import (
     EtfCountriesData, EtfCountriesQueryParams,
@@ -29,6 +29,8 @@ from openbb_core.provider.utils.errors import EmptyDataError
 from pydantic import Field
 
 from openbq_eodhd.models import _fundamentals as F
+from openbq_eodhd.models._chart_sources import ChartSourceEnvelope, annotate_chart_sources
+from openbq_eodhd.models._etf_hierarchy_source import EtfLiveSource, holding_hierarchy
 
 _PCT = {"x-unit_measurement": "percent", "x-frontend_multiply": 100}
 
@@ -119,6 +121,7 @@ class EODHDEtfInfoFetcher(Fetcher[EODHDEtfInfoQueryParams, list[EODHDEtfInfoData
 
 class EODHDEtfHoldingsQueryParams(EtfHoldingsQueryParams):
     """EODHD ETF Holdings Query."""
+    chart_source: bool = Field(default=False, description="Include evidence for the acquired ETF holdings hierarchy.")
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols.")
 
 
@@ -140,11 +143,23 @@ class EODHDEtfHoldingsFetcher(Fetcher[EODHDEtfHoldingsQueryParams, list[EODHDEtf
         return EODHDEtfHoldingsQueryParams(**params)
 
     @staticmethod
-    async def aextract_data(query, credentials, **kwargs) -> dict:  # pylint: disable=unused-argument
+    async def aextract_data(query, credentials, **kwargs) -> dict | F.FundamentalsAcquisition:  # pylint: disable=unused-argument
+        if query.chart_source:
+            return await F.get_bundle_acquisition(query.symbol, query.exchange, credentials)
         return await F.get_bundle(query.symbol, query.exchange, credentials)
 
     @staticmethod
-    def transform_data(query, data: dict, **kwargs) -> list[EODHDEtfHoldingsData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: dict | F.FundamentalsAcquisition, **kwargs,
+    ) -> list[EODHDEtfHoldingsData] | AnnotatedResult[list[EODHDEtfHoldingsData]]:
+        if isinstance(data, F.FundamentalsAcquisition):
+            if query.chart_source:
+                source = holding_hierarchy(data.payload, F.qualify(query.symbol, query.exchange), query.exchange, data.retrieved_at)
+                if source is not None:
+                    values, receipt = source
+                    rows = [EODHDEtfHoldingsData.model_validate(row) for row in values]
+                    return annotate_chart_sources(rows, ChartSourceEnvelope[EtfLiveSource](receipts=[receipt]))
+            data = data.payload
         etf = _etf_section(data, query.symbol.upper())
         holdings = etf.get("Holdings") or {}
         rows = []
