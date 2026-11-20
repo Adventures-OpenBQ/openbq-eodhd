@@ -126,3 +126,54 @@ def test_accepts_decimal_and_binary_fraction_conversions_without_rounding_the_ob
     for value in (0.0411, 4.11 / 100):
         amended = [*rows[:2], {**rows[2], "source_value": 4.11, "value": value}, *rows[3:]]
         assert prepare_overlay_snapshot(manifest, amended).result == amended
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2024-10-01", "2025-09-30"),  # annual
+    ("1999-10-01", "2025-09-30"),  # 26 years
+    ("2025-09-28", "2025-09-30"),  # short stub
+    ("2025-01-31", "2025-04-30"),  # clamped three-month anniversary itself, not its previous day
+    ("2025-07-09", "2025-09-30"),  # 12 weeks needs issuer calendar evidence
+])
+def test_incompatible_fq_sets_a_global_raw_coordinate_conflict(start, end):
+    _, manifest, rows = snapshot("price-eps")
+    invalid = {**rows[1], "date": end, "target_start": start, "target_end": end, "available_at": "2025-11-02"}
+    annotated = prepare_overlay_snapshot(manifest, [*rows, invalid])
+    receipt = annotated.metadata["chart_sources"]["receipts"][0]
+    assert receipt["diagnostics"] == ["coordinate_conflict"]
+    assert receipt["unsafe"]["coordinate_conflict"] and receipt["raw_count"] == 3
+    assert annotated.result == rows
+
+
+@pytest.mark.parametrize(("start", "end"), [
+    ("2025-05-01", "2025-07-31"),  # off-calendar quarter
+    ("2024-01-31", "2024-04-29"),  # leap year; anniversary clamped to April 30
+    ("2025-01-31", "2025-04-29"),  # common year
+    ("2023-10-01", "2023-12-30"),  # 13 weeks
+    ("2022-09-25", "2022-12-31"),  # 14 weeks
+])
+def test_supported_calendar_and_week_quarters_stay_clean(start, end):
+    _, manifest, rows = snapshot("price-eps")
+    rows[1].update(date=end, target_start=start, target_end=end)
+    annotated = prepare_overlay_snapshot(manifest, rows)
+    assert annotated.result == rows
+    assert not annotated.metadata["chart_sources"]["receipts"][0]["diagnostics"]
+
+
+@pytest.mark.parametrize(("vintage", "value", "valid"), [
+    ("2026-10-01T00:00:00Z", 337.476, False),
+    ("2026-10-31T23:59:59.999999Z", 337.476, False),
+    ("2026-11-01T00:00:00Z", 337.476, True),
+    ("2026-11-15T00:00:00Z", 337.476, True),
+    ("2026-10-01T00:00:00Z", None, True),
+])
+def test_cpi_input_vintage_follows_an_observed_measurement_month(vintage, value, valid):
+    _, manifest, rows = snapshot("cpi-ten-year")
+    manifest["vintages"]["left"] = vintage
+    for row in rows[:2]:
+        row.update(input_vintage=vintage, available_at=None, release_ref=None)
+    rows[1].update(value=value, source_value=value)
+    annotated = prepare_overlay_snapshot(manifest, rows)
+    receipt = annotated.metadata["chart_sources"]["receipts"][0]
+    assert receipt["unsafe"]["coordinate_conflict"] is (not valid)
+    assert annotated.result == (rows if valid else [rows[0], *rows[2:]])

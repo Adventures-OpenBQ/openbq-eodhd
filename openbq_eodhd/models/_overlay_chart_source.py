@@ -3,6 +3,7 @@
 """Validate a single explicitly acquired long-form snapshot. No fetcher uses this contract."""
 
 import re
+from calendar import monthrange
 from datetime import date, datetime
 from decimal import Decimal
 from math import isfinite
@@ -213,6 +214,18 @@ def _finite(value):
         return False
 
 
+def _supported_quarter(start, end):
+    if not start or not end:
+        return False
+    days = (end - start).days + 1
+    if days in (13 * 7, 14 * 7):
+        return True
+    # Clamp the exclusive three-month anniversary to its target month's last day.
+    months = range(start.month - 1, start.month + 3)
+    lengths = [monthrange(start.year + month // 12, month % 12 + 1)[1] for month in months]
+    return days == sum(lengths[:3]) - max(0, start.day - lengths[3])
+
+
 def _row_diagnostics(manifest, side, index, row):
     facts = getattr(manifest.series, side)
     eps = facts.id == "reported_diluted_eps"
@@ -248,12 +261,15 @@ def _row_diagnostics(manifest, side, index, row):
             or (release is not None and (not available or not _has_reference(row.get("release_ref")) or
                                          (day and release_day < day)))):
         flags.add("coordinate_conflict")
-    if facts.id == "CUSR0000SA0" and day and (day.day != 1 or (release_day and
-            (release_day.year, release_day.month) <= (day.year, day.month))):
-        flags.add("coordinate_conflict")
+    if facts.id == "CUSR0000SA0" and day:
+        month = (day.year, day.month)
+        observed = raw is not None or value is not None
+        if (day.day != 1 or (observed and (vintage.year, vintage.month) <= month)
+                or (release_day and (release_day.year, release_day.month) <= month)):
+            flags.add("coordinate_conflict")
     if eps:
         start, end = _day(row.get("target_start")), _day(row.get("target_end"))
-        if (not start or not end or start >= end or end != day or not available
+        if (not _supported_quarter(start, end) or end != day or not available
                 or row.get("session_timing") not in (None, "before-market", "after-market", "during-market")):
             flags.add("coordinate_conflict")
     elif any(row.get(k) is not None for k in ("target_start", "target_end", "session_timing")):
