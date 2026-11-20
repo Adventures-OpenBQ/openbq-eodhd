@@ -8,6 +8,7 @@ CompanyNews (symbol-scoped via `s=`), one endpoint behind both.
 from typing import Any
 
 from openbb_core.app.model.abstract.error import OpenBBError
+from openbb_core.provider.abstract.annotated_result import AnnotatedResult
 from openbb_core.provider.abstract.fetcher import Fetcher
 from openbb_core.provider.standard_models.company_news import (
     CompanyNewsData, CompanyNewsQueryParams,
@@ -16,13 +17,17 @@ from openbb_core.provider.standard_models.world_news import (
     WorldNewsData, WorldNewsQueryParams,
 )
 from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
-from pydantic import Field
+from pydantic import Field, ValidationError, model_serializer
 
+from openbq_eodhd.models._chart_sources import ChartSourceEnvelope, annotate_chart_sources
 from openbq_eodhd.models._client import rest_json, sdk_call
 from openbq_eodhd.models._fundamentals import qualify
+from openbq_eodhd.models._news_chart_source import (
+    NewsScope, NewsSource, Polarity, normalize_news_page, qualified_news_symbol,
+)
 
 
-def _fetch_news(credentials, params: dict, context: str) -> list[dict]:
+def _fetch_news(credentials, params: dict, context: str, *, chart_source: bool = False) -> list[dict]:
     """One /news call via the raw endpoint (the SDK wrapper refuses the
     general feed the API itself serves)."""
     resp = sdk_call(credentials, lambda c: rest_json(c, "news", params), context)
@@ -30,6 +35,10 @@ def _fetch_news(credentials, params: dict, context: str) -> list[dict]:
         raise UnauthorizedError(
             f"EODHD ({context}): {resp.get('message') or resp.get('error') or resp}"
         )
+    if chart_source:
+        if not isinstance(resp, list):
+            raise UnauthorizedError("EODHD CompanyNews did not return an article array.")
+        return resp
     if not resp:
         raise EmptyDataError(f"EODHD returned no {context}.")
     return resp
@@ -104,6 +113,24 @@ class EODHDCompanyNewsQueryParams(CompanyNewsQueryParams):
     __json_schema_extra__ = {"symbol": {"multiple_items_allowed": True}}
 
     exchange: str = Field(default="US", description="EODHD exchange code for bare symbols.")
+    chart_source: bool = Field(default=False, description="Include delivered news chart acquisition evidence.")
+    offset: int = Field(default=0, description="EODHD article offset for chart_source requests.")
+
+    def chart_page(self) -> tuple[str, NewsScope]:
+        symbol = qualify(self.symbol or "", self.exchange)
+        if not qualified_news_symbol(symbol):
+            raise OpenBBError("EODHD CompanyNews chart source requires one qualified instrument.")
+        try:
+            scope = NewsScope(
+                kind="sample", start=self.start_date, end=self.end_date,
+                limit=50 if self.limit is None else self.limit, offset=self.offset,
+            )
+        except ValidationError as exc:
+            raise OpenBBError(
+                "EODHD CompanyNews chart source requires ordered dates, limit 1–1000,"
+                " and a nonnegative offset with limit + offset at most 10000."
+            ) from exc
+        return symbol, scope
 
 
 class EODHDCompanyNewsData(CompanyNewsData):
@@ -111,6 +138,14 @@ class EODHDCompanyNewsData(CompanyNewsData):
 
     tags: list[str] | None = Field(default=None, description="EODHD topic tags on the article.")
     sentiment: dict | None = Field(default=None, description="EODHD polarity/pos/neu/neg scores.")
+    polarity: Polarity | None = Field(default=None, description="Opt-in article polarity in [-1,1].")
+
+    @model_serializer(mode="wrap")
+    def serialize_news(self, handler):
+        row = handler(self)
+        if "polarity" not in self.model_fields_set:
+            row.pop("polarity", None)
+        return row
 
 
 class EODHDCompanyNewsFetcher(
@@ -128,23 +163,33 @@ class EODHDCompanyNewsFetcher(
 
         if not query.symbol:
             raise OpenBBError("EODHD company news requires a symbol.")
-        symbols = ",".join(
-            qualify(s, query.exchange) for s in query.symbol.split(",") if s.strip()
-        )
+        if query.chart_source:
+            symbols, scope = query.chart_page()
+        else:
+            symbols = ",".join(
+                qualify(s, query.exchange) for s in query.symbol.split(",") if s.strip()
+            )
+        params = {
+            "s": symbols,
+            "from": str(query.start_date) if query.start_date else None,
+            "to": str(query.end_date) if query.end_date else None,
+            "limit": query.limit,
+        }
+        if query.chart_source:
+            params.update(limit=scope.limit, offset=scope.offset)
         return await to_thread(
-            _fetch_news,
-            credentials,
-            {
-                "s": symbols,
-                "from": str(query.start_date) if query.start_date else None,
-                "to": str(query.end_date) if query.end_date else None,
-                "limit": query.limit,
-            },
-            f"news for '{query.symbol}'",
+            _fetch_news, credentials, params, f"news for '{query.symbol}'", chart_source=query.chart_source,
         )
 
     @staticmethod
-    def transform_data(query, data: list[dict], **kwargs) -> list[EODHDCompanyNewsData]:  # pylint: disable=unused-argument
+    def transform_data(
+        query, data: list[dict], **kwargs,
+    ) -> list[EODHDCompanyNewsData] | AnnotatedResult[list[EODHDCompanyNewsData]]:
+        if query.chart_source:
+            instrument, scope = query.chart_page()
+            records, receipt = normalize_news_page(data, instrument, scope)
+            rows = [EODHDCompanyNewsData.model_validate(record) for record in records]
+            return annotate_chart_sources(rows, ChartSourceEnvelope[NewsSource](receipts=[receipt]))
         rows = []
         for it in data:
             # date, title and url are all required by the standard model
