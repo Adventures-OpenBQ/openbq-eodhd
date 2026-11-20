@@ -202,3 +202,41 @@ def test_missing_headline_field_does_not_fall_back_to_valuation_or_demote_its_si
     assert result.result[0].pe_ratio is None and receipt["diagnostics"] == []
     limited = metrics.EODHDFinancialRatiosFetcher.transform_query({"symbol": "AAPL", "chart_source": True, "limit": 2})
     assert isinstance(metrics.EODHDFinancialRatiosFetcher.transform_data(limited, F.FundamentalsAcquisition(bundle, stamp)), list)
+
+
+@pytest.mark.parametrize("start,end,valid", [
+    ("2025-10-01", "2026-10-01", False), ("2023-03-01", "2024-02-28", False),
+    ("2024-02-29", "2025-02-27", False), ("2023-03-01", "2024-02-29", True),
+    ("2024-02-29", "2025-02-28", True), ("2025-10-01", "2026-09-29", True),
+    ("2025-10-01", "2026-10-06", True),
+])
+def test_acquired_calendar_or_week_year_boundaries(start, end, valid):
+    receipt = snapshot()
+    metric = receipt["metrics"]["eps_ttm"]
+    for obs in [metric, *metric["additional_observations"]]:
+        obs.update(period_start=start, period_end=end)
+    if valid:
+        assert validate(receipt).model_dump(mode="json") == receipt
+    else:
+        with pytest.raises(ValidationError):
+            validate(receipt)
+
+
+@pytest.mark.parametrize("field,token", [
+    ("share_class", "76.544"), ("share_class", "1e+3"), ("share_class", "Unknown"),
+    ("share_class", "not_available"), ("basis_reference", "UNKNOWN"), ("basis_reference", "NA"),
+    ("observation_id", "unavailable"), ("listing", "76.544"), ("issuer", "76.544"),
+])
+def test_missing_or_amount_shaped_identity_is_not_acquired_proof(field, token):
+    receipt = snapshot()
+    if field in ("basis_reference", "observation_id"):
+        receipt["metrics"]["eps_ttm"]["additional_observations"][0][field] = token
+    else:
+        receipt[field] = token
+    with pytest.raises(ValidationError):
+        validate(receipt)
+
+
+@pytest.mark.parametrize("share_class", [None, "A", "1A", "Class-1"])
+def test_known_share_class_or_explicit_unknown_card(share_class):
+    assert validate({**snapshot(), "share_class": share_class}).share_class == share_class

@@ -3,11 +3,12 @@
 """Acquired KPI coordinates and units. Numeric measurements stay exclusively in table rows."""
 
 import re
+from calendar import isleap
 from datetime import date, datetime
 from sys import float_info
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from openbq_eodhd.models import _fundamentals as F
 from openbq_eodhd.models._chart_sources import ChartSourceFacts, ChartSourceReceipt
@@ -15,9 +16,23 @@ from openbq_eodhd.models._chart_sources import ChartSourceFacts, ChartSourceRece
 Preset = Literal["price", "market_cap", "dividend_yield", "pe_ratio", "eps_ttm", "revenue_ttm"]
 LiveOrigin = Literal["eodhd-key-metrics", "eodhd-financial-ratios"]
 Diagnostic = Literal["identity_conflict", "unit_conflict", "period_conflict", "basis_conflict", "duplicate_conflict"]
-Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$")]
-CoordinateId = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_.:+-]{0,127}$")]
-Qualified = Annotated[str, Field(max_length=128, pattern=r"^[A-Z0-9^][A-Z0-9^_/-]*(?:\.[A-Z0-9^_/-]+)*\.[A-Z0-9][A-Z0-9_-]*$")]
+_MISSING_IDS = frozenset({
+    "unknown", "unk", "na", "none", "null", "nil", "nan", "inf", "infinity", "undefined",
+    "unavailable", "missing", "unspecified", "undisclosed", "unreported", "notavailable",
+    "notapplicable", "notprovided", "notspecified", "notreported",
+})
+
+
+def _known_id(value: str) -> str:
+    marker = re.sub(r"[^a-z0-9]", "", value.lower())
+    if marker in _MISSING_IDS or re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value):
+        raise ValueError("Expected a known acquisition identifier")
+    return value
+
+
+Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$"), AfterValidator(_known_id)]
+CoordinateId = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_.:+-]{0,127}$"), AfterValidator(_known_id)]
+Qualified = Annotated[str, Field(max_length=128, pattern=r"^[A-Z0-9^][A-Z0-9^_/-]*(?:\.[A-Z0-9^_/-]+)*\.[A-Z0-9][A-Z0-9_-]*$"), AfterValidator(_known_id)]
 UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,6})?(?:Z|\+00:00)")
 # All origins are physical numeric fields of the supported acquisition schema.
 CONTRACT = {
@@ -116,7 +131,11 @@ class MetricObservation(ChartSourceFacts):
                     or not self.adjustment_basis or not self.reporting_basis):
                 raise ValueError("Expected actual TTM reporting period and reporting basis")
             start, end = day(self.period_start), day(self.period_end)
-            if ((end - start).days + 1 not in (364, 365, 366, 371)
+            # A calendar year includes the February following its start, or the current
+            # February for January/February starts (including a start on leap day).
+            february_year = start.year if start.month <= 2 else start.year + 1
+            calendar_days = 366 if isleap(february_year) else 365
+            if ((end - start).days + 1 not in (364, calendar_days, 371)
                     or end > day((self.as_of or self.vintage)[:10])):
                 raise ValueError("Contradictory trailing reporting period")
         else:
