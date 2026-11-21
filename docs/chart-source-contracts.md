@@ -15,7 +15,7 @@ emit an equivalent receipt along with the rows it acquires at runtime.
 
 ## Shared wire fields
 
-Every receipt has `version: 1`, `kind`, `retrieved_at` (UTC timestamp),
+Each screener, dividend and income receipt has `version: 1`, `kind`, `retrieved_at` (UTC timestamp),
 `raw_count`, `normalized_count`, `delivered_count`, `diagnostics`,
 `field_origins` and `unsafe`. All fields in the examples are required except
 where a union variant changes the fields. Nullable fields are sent as JSON
@@ -128,6 +128,59 @@ present. This list carries field identities and no amounts. Required anchors
 can be absent from a full record. Downstream chart admission still checks
 the presented fields, period identity, currency and scale. Optional missing
 components are left for downstream reconciliation.
+
+## Daily adjusted prices
+
+The equity and ETF historical routes and their generated `/eodhd` mirrors
+accept `chart_source=true` with explicit inclusive `start_date` and `end_date`.
+The shared fetcher qualifies the effective `1d` request for one to twelve unique
+EODHD `.US` listings. Use the standard EODHD symbol and exchange conventions.
+For example, `AAPL.US,MCD.US` from `2026-10-12` through `2026-11-19` requests
+two listing arrays in that order. Weekly, intraday, index, non-US, crypto and
+FX acquisitions have no daily price receipt.
+
+The fetcher makes one ordinary SDK EOD call per listing. The version-1
+`daily-price` receipt is one member of
+`extra.results_metadata.chart_sources.receipts`, with `interval: "1d"`,
+the requested dates, and the ordered `symbols`. It identifies `date_field:
+"date"`, `price_field: "adjusted_close"` and a `symbol_field` of `"symbol"`
+for multiple listings or JSON null for a single listing. The UTC
+`retrieved_at` records when the last SDK array was received. The receipt
+contains counts and omission coordinates without numeric prices.
+
+Each entry of `listings` binds the raw, normalized and delivered counts to
+one symbol. `duplicate_count` counts exact repeated raw rows collapsed during
+the opt-in fetch. `omissions` contains unique `[symbol, date]` coordinates for
+known dated observations excluded because the adjusted price was invalid,
+the bar failed normalization, or the date had conflicting raw rows. With
+all unsafe flags clear, raw count equals normalized count plus duplicate
+count plus omission count. Normalized and delivered counts agree. A
+successful empty array has zero counts for that listing. A positive safe
+duplicate count requires an original delivered or omitted coordinate.
+
+The six unsafe facts are `undatable_loss`, `conflicting_duplicates`,
+`identity_conflict`, `partial_acquisition`, `invalid_response` and
+`missing_adjusted_basis`. Diagnostics are the alphabetically ordered true
+flags. Unsafe facts refuse chart admission and can account for rows whose
+coordinates are unknown or outside the request. A response object, denial,
+or malformed array fails the acquisition. Paging and partial markers also
+fail the acquisition, including when another requested listing succeeded.
+Marker names accept snake case, camel case and case variants, including
+`nextCursor` and `isPartial`. The raw observer reconciles every declared
+symbol, ticker, code and exchange alias before normalization. Contradictory
+case variants set `identity_conflict` even on a row discarded by normalization.
+The exchange suffix describes the EODHD listing namespace.
+
+The paired PR records the regression checks and installed qualification.
+[Published-PR follow-up](https://github.com/Adventures-OpenBQ/bdobb/blob/codex/v9-live-observed-returns/docs/releases/validation/v9/live-observed-returns/published-pr-follow-up.md)
+A nonempty array wholly lacking the `adjusted_close` field refuses the
+adjusted basis. A declared invalid adjusted price at a known date breaks
+adjacency. The chart uses only adjusted closes from this acquisition.
+
+**Observed quote-to-quote returns; exchange-session completeness unknown.**
+If the provider omitted an observation without a raw row, the receipt has
+no coordinate for it and an adjacent observed pair can span multiple
+exchange sessions.
 
 ## Complete serialized examples
 

@@ -286,3 +286,26 @@ class TestFetchBars:
         assert isinstance(kwargs["from_unix_time"], int)
         assert isinstance(kwargs["to_unix_time"], int)
         assert kwargs["from_unix_time"] < kwargs["to_unix_time"]
+
+    def test_raw_observer_sees_each_original_array_before_symbol_injection(
+        self, eodhd_credentials, eod_bar_data, mock_eodhd_client,
+    ):
+        raw = {"AAPL.US": eod_bar_data, "MCD.US": []}
+        observed = []
+
+        def observe(symbol, response, retrieved_at):
+            assert response is raw[symbol]
+            assert all("_symbol" not in bar for bar in response)
+            assert retrieved_at.utcoffset().total_seconds() == 0
+            observed.append(symbol)
+
+        client = mock_eodhd_client(lambda *, symbol, **kwargs: raw[symbol])
+        with patch(PATCH_TARGET, return_value=client):
+            result = run_async(
+                fetch_bars, "1d", ["AAPL.US", "MCD.US"],
+                date(2024, 1, 1), date(2024, 1, 5), eodhd_credentials,
+                raw_observer=observe,
+            )
+        assert observed == ["AAPL.US", "MCD.US"]
+        assert all(bar["_symbol"] == "AAPL.US" for bar in result)
+        assert all("_symbol" not in bar for bar in raw["AAPL.US"])
