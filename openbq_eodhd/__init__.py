@@ -5,6 +5,26 @@
 
 from openbb_core.provider.abstract.provider import Provider
 
+from openbq_eodhd.models.commodity import EODHDCommoditySpotPricesFetcher
+from openbq_eodhd.models.credit import (
+    EODHDHighQualityMarketCorporateBondFetcher,
+    EODHDRiskPremiumFetcher,
+)
+from openbq_eodhd.models.filings import (
+    EODHDCompanyFilingsFetcher,
+    EODHDRevenueBusinessLineFetcher,
+    EODHDRevenueGeographicFetcher,
+)
+from openbq_eodhd.models.options import EODHDOptionsChainsFetcher
+from openbq_eodhd.models.rates import (
+    EODHDEuropeanCentralBankInterestRatesFetcher,
+    EODHDEuroShortTermRateFetcher,
+    EODHDFederalFundsRateFetcher,
+    EODHDOvernightBankFundingRateFetcher,
+    EODHDSOFRFetcher,
+    EODHDSONIAFetcher,
+)
+from openbq_eodhd.models.real_estate import EODHDHousePriceIndexFetcher
 from openbq_eodhd.models.calendar import (
     EODHDCalendarEarningsFetcher,
     EODHDCalendarIpoFetcher,
@@ -45,6 +65,7 @@ from openbq_eodhd.models.fundamental import (
 from openbq_eodhd.models.government import EODHDGovernmentTradesFetcher
 from openbq_eodhd.models.index import (
     EODHDAvailableIndicesFetcher,
+    EODHDIndexConstituentsFetcher,
     EODHDIndexHistoricalFetcher,
 )
 from openbq_eodhd.models.insider import EODHDInsiderTradingFetcher
@@ -82,6 +103,7 @@ from openbq_eodhd.models.search import (
     EODHDEtfSearchFetcher,
 )
 from openbq_eodhd.models.treasury import (
+    EODHDTipsYieldsFetcher,
     EODHDTreasuryRatesFetcher,
     EODHDYieldCurveFetcher,
 )
@@ -139,6 +161,22 @@ __all__ = [
     "EODHDConsumerPriceIndexFetcher",
     "EODHDUnemploymentFetcher",
     "EODHDCountryProfileFetcher",
+    "EODHDCompanyFilingsFetcher",
+    "EODHDRevenueBusinessLineFetcher",
+    "EODHDRevenueGeographicFetcher",
+    "EODHDIndexConstituentsFetcher",
+    "EODHDOptionsChainsFetcher",
+    "EODHDSOFRFetcher",
+    "EODHDFederalFundsRateFetcher",
+    "EODHDOvernightBankFundingRateFetcher",
+    "EODHDSONIAFetcher",
+    "EODHDEuroShortTermRateFetcher",
+    "EODHDEuropeanCentralBankInterestRatesFetcher",
+    "EODHDTipsYieldsFetcher",
+    "EODHDHighQualityMarketCorporateBondFetcher",
+    "EODHDRiskPremiumFetcher",
+    "EODHDCommoditySpotPricesFetcher",
+    "EODHDHousePriceIndexFetcher",
     "eodhd_provider",
 ]
 
@@ -156,8 +194,12 @@ eodhd_provider = Provider(
         "calendars (upcoming earnings, IPOs, splits, economic events); search, "
         "screener and index/forex reference data; ETF profiles and holdings; "
         "world news; US Treasury rates and yield curve; congressional trades; "
-        "historical market cap; and macro indicators (GDP, CPI, unemployment, "
-        "country profiles)."
+        "historical market cap; macro indicators (GDP, CPI, unemployment, "
+        "country profiles); reference and policy rates (SOFR, EFFR, OBFR, SONIA, "
+        "ESTR, ECB), real yields and the HQM corporate curve; country risk "
+        "premiums; house prices; commodity spot prices; SEC filings and revenue "
+        "segments; index constituents; and end-of-day US options chains "
+        "(marketplace subscription)."
     ),
     # Becomes the credential field `eodhd_api_key` (env: EODHD_API_KEY).
     credentials=["api_key"],
@@ -215,6 +257,24 @@ eodhd_provider = Provider(
         "ConsumerPriceIndex": EODHDConsumerPriceIndexFetcher,
         "Unemployment": EODHDUnemploymentFetcher,
         "CountryProfile": EODHDCountryProfileFetcher,
+        # All-In-One endpoints added in 9.1.0 (OptionsChains needs the
+        # US Stock Options marketplace subscription).
+        "CompanyFilings": EODHDCompanyFilingsFetcher,
+        "RevenueBusinessLine": EODHDRevenueBusinessLineFetcher,
+        "RevenueGeographic": EODHDRevenueGeographicFetcher,
+        "IndexConstituents": EODHDIndexConstituentsFetcher,
+        "OptionsChains": EODHDOptionsChainsFetcher,
+        "SOFR": EODHDSOFRFetcher,
+        "FederalFundsRate": EODHDFederalFundsRateFetcher,
+        "OvernightBankFundingRate": EODHDOvernightBankFundingRateFetcher,
+        "SONIA": EODHDSONIAFetcher,
+        "EuroShortTermRate": EODHDEuroShortTermRateFetcher,
+        "EuropeanCentralBankInterestRates": EODHDEuropeanCentralBankInterestRatesFetcher,
+        "TipsYields": EODHDTipsYieldsFetcher,
+        "HighQualityMarketCorporateBond": EODHDHighQualityMarketCorporateBondFetcher,
+        "RiskPremium": EODHDRiskPremiumFetcher,
+        "CommoditySpotPrices": EODHDCommoditySpotPricesFetcher,
+        "HousePriceIndex": EODHDHousePriceIndexFetcher,
     },
     repr_name="EOD Historical Data (EODHD)",
 )

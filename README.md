@@ -56,6 +56,44 @@ predates the SDK's typed errors, request timeouts, and the fundamentals
   more events than that is fetched in successive date windows and merged, so
   a busy three-month window returns every row instead of being cut off.
 
+### Rates, credit, filings and the other All-In-One endpoints
+
+Added in 9.1.0. Each row is an OpenBB standard model, so each has an
+`obb.eodhd.*` mirror; all but the options chain are included in EODHD's
+All-In-One plan.
+
+| OpenBB standard model | Mirror path | EODHD endpoint | Notes |
+| --- | --- | --- | --- |
+| `SOFR` | `/fixedincome/rate/sofr` | `/rates/reference-rates` (`SOFR`) | NY Fed percentiles, volume in USD billions |
+| `FederalFundsRate` | `/fixedincome/rate/effr` | same (`EFFR`) | percentiles and volume; no target range |
+| `OvernightBankFundingRate` | `/fixedincome/rate/overnight_bank_funding` | same (`OBFR`) | percentiles and volume |
+| `SONIA` | `/fixedincome/rate/sonia` | same (`SONIA`) | rate only |
+| `EuroShortTermRate` | `/fixedincome/rate/estr` | same (`ESTR`) | rate only |
+| `EuropeanCentralBankInterestRates` | `/fixedincome/rate/ecb` | `/rates/policy-rates` | deposit, lending or refinancing |
+| `TipsYields` | `/fixedincome/government/tips_yields` | `/ust/real-yield-rates` | constant-maturity real yields, not single securities |
+| `HighQualityMarketCorporateBond` | `/fixedincome/corporate/hqm` | `/credit-risk/corporate/hqm-yields` | par or spot, monthly, as of one or several dates |
+| `RiskPremium` | `/economy/risk_premium` | `/credit-risk/sovereign/risk-premium` | Damodaran, 157 countries, in percent |
+| `HousePriceIndex` | `/economy/house_price_index` | `/real-estate/{code}` | BIS, quarterly, index or year-over-year, nominal or real |
+| `CommoditySpotPrices` | `/commodity/price/spot` | `/commodities/historical/{code}` | twelve spot series; no precious metals, no futures |
+| `CompanyFilings` | `/equity/fundamental/filings` | `/sec-filings/{symbol}/10k`, `/10q`, `/8k` | US only; links to the SEC EDGAR filing index |
+| `RevenueBusinessLine` | `/equity/fundamental/revenue_per_segment` | `/sec-companies/{symbol}/segments` | XBRL product and service members |
+| `RevenueGeographic` | `/equity/fundamental/revenue_per_geography` | same | XBRL geographic members |
+| `IndexConstituents` | `/index/constituents` | `/fundamentals/{CODE}.INDX` (`Components`) | current members with sector and weight |
+| `OptionsChains` | `/derivatives/options/chains` | `/mp/unicornbay/options/eod` | needs the US Stock Options marketplace add-on (HTTP 403 without it) |
+
+- Rates default to the last year when no start date is given: the endpoints
+  return at most 100 rows a page.
+- Percent values follow each standard model: fields the model tags as
+  normalized hold fractions (0.0392), the rest hold the percent as shown.
+- `OptionsChains` is end of day only, one trade date per call, with implied
+  volatility and the five Greeks. Its mapping follows EODHD's published OpenAPI
+  description and has **not** been run against the live feed, because the
+  development account is not subscribed to it.
+- EODHD endpoints with no OpenBB standard model are not wired: sovereign
+  credit ratings and CDS spreads, the corporate bond distress index, CDS market
+  aggregates, funding-stress spreads, sanctions, symbol change history, CBOE
+  Europe indices, SEC company ratios and growth, and tick data.
+
 ## Aggregation metadata
 
 The provider-owned [aggregation dictionary](docs/aggregation-metadata.md)

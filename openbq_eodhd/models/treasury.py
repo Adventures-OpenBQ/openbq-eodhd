@@ -13,6 +13,9 @@ from datetime import date as dateType
 from typing import Any
 
 from openbb_core.provider.abstract.fetcher import Fetcher
+from openbb_core.provider.standard_models.tips_yields import (
+    TipsYieldsData, TipsYieldsQueryParams,
+)
 from openbb_core.provider.standard_models.treasury_rates import (
     TreasuryRatesData, TreasuryRatesQueryParams,
 )
@@ -171,3 +174,63 @@ class EODHDYieldCurveFetcher(
         if not rows:
             raise EmptyDataError("No yield-curve data at or before the requested date(s).")
         return rows
+
+
+class EODHDTipsYieldsQueryParams(TipsYieldsQueryParams):
+    """EODHD TIPS Yields Query."""
+
+
+class EODHDTipsYieldsData(TipsYieldsData):
+    """EODHD TIPS Yields Data: the Treasury's real yield curve, one row per date and tenor.
+
+    These are constant-maturity real yields derived from TIPS, not individual
+    securities, so `symbol` and `due` stay empty and `maturity` names the tenor.
+    """
+
+    maturity: str | None = Field(default=None, description="Constant maturity, e.g. year_10.")
+
+
+class EODHDTipsYieldsFetcher(Fetcher[EODHDTipsYieldsQueryParams, list[EODHDTipsYieldsData]]):
+    """EODHD US Treasury real (TIPS) yield curve rates (/ust/real-yield-rates)."""
+
+    @staticmethod
+    def transform_query(params: dict[str, Any]) -> EODHDTipsYieldsQueryParams:
+        return EODHDTipsYieldsQueryParams(**params)
+
+    @staticmethod
+    async def aextract_data(query, credentials, **kwargs) -> list[dict]:  # pylint: disable=unused-argument
+        from asyncio import to_thread
+
+        from openbq_eodhd.models._client import rest_json
+
+        def _sync():
+            resp = sdk_call(
+                credentials, lambda c: rest_json(c, "ust/real-yield-rates", {}), "real yields"
+            )
+            rows = resp.get("data") if isinstance(resp, dict) else resp
+            if not rows:
+                raise EmptyDataError("EODHD returned no real yield data.")
+            return rows
+
+        return await to_thread(_sync)
+
+    @staticmethod
+    def transform_data(query, data: list[dict], **kwargs):  # pylint: disable=unused-argument
+        start = str(query.start_date) if query.start_date else None
+        end = str(query.end_date) if query.end_date else None
+        order = list(TENOR_MAP.values())
+        rows = []
+        for it in data:
+            maturity = TENOR_MAP.get(it.get("tenor") or "")
+            d, rate = it.get("date"), it.get("rate")
+            if not maturity or not d or rate is None or (start and d < start) or (end and d > end):
+                continue
+            rows.append(EODHDTipsYieldsData.model_validate({
+                "date": d,
+                "name": f"{it['tenor']} Treasury real yield",
+                "value": round(float(rate) / 100, 8),
+                "maturity": maturity,
+            }))
+        if not rows:
+            raise EmptyDataError("No real yields in the requested window.")
+        return sorted(rows, key=lambda r: (r.date, order.index(r.maturity)))
