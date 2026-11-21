@@ -5,15 +5,15 @@
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from json import dumps
-from math import isfinite
 from re import fullmatch
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from openbb_core.provider.utils.errors import UnauthorizedError
 from pydantic import AfterValidator, Field, model_validator
 
+from openbq_eodhd.models._chart_evidence import finite_number, iso_date
 from openbq_eodhd.models._chart_sources import (
     ChartSourceFacts,
     ChartSourceReceipt,
@@ -34,12 +34,7 @@ _PARTIAL_KEYS = {
 
 
 def _iso_day(value: object) -> str | None:
-    if not isinstance(value, str) or len(value) != 10:
-        return None
-    try:
-        return value if date.fromisoformat(value).isoformat() == value else None
-    except ValueError:
-        return None
+    return value if isinstance(value, str) and len(value) == 10 and iso_date(value) is not None else None
 
 
 def _strict_iso_day(value: str) -> str:
@@ -130,13 +125,10 @@ def _require_array(symbol: str, response: object) -> list[dict]:
     """Reject wrappers and failed arrays before any listing can be delivered."""
     payloads = response if isinstance(response, list) else [response]
     for payload in payloads:
-        if isinstance(payload, dict) and not any(
-            payload.get(key) for key in ("error", "errors", "message")
-        ):
-            if any(key.replace("_", "").lower() in _PARTIAL_KEYS for key in payload):
-                raise UnauthorizedError(f"EODHD ({symbol}): partial_acquisition")
-        else:
+        if not isinstance(payload, dict) or any(payload.get(key) for key in ("error", "errors", "message")):
             raise UnauthorizedError(f"EODHD ({symbol}): invalid_response")
+        if any(key.replace("_", "").lower() in _PARTIAL_KEYS for key in payload):
+            raise UnauthorizedError(f"EODHD ({symbol}): partial_acquisition")
     if not isinstance(response, list):
         raise UnauthorizedError(f"EODHD ({symbol}): invalid_response")
     return response
@@ -174,13 +166,8 @@ def _declarations_agree(bar: dict, denominations: dict[str, str]) -> bool:
     return True
 
 
-def _valid_adjusted_close(value: Any) -> bool:
-    if type(value) not in (int, float) or value <= 0:
-        return False
-    try:
-        return isfinite(value)
-    except OverflowError:
-        return False
+def _valid_adjusted_close(value: object) -> bool:
+    return type(value) in (int, float) and value > 0 and finite_number(value) is not None
 
 
 @dataclass

@@ -5,6 +5,7 @@
 
 from datetime import datetime, timezone
 from json import dumps
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -65,18 +66,8 @@ def test_daily_price_opt_in_counts_calls_and_raw_gaps(fetch, monkeypatch):
     acquired_at = datetime(2026, 11, 20, 13, 14, 15, tzinfo=timezone.utc)
     later = datetime(2026, 11, 20, 19, tzinfo=timezone.utc)
 
-    class AcquisitionClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return acquired_at.astimezone(tz)
-
-    class TransformClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return later.astimezone(tz)
-
-    monkeypatch.setattr(_bars, "datetime", AcquisitionClock)
-    monkeypatch.setattr(equity_historical, "datetime", TransformClock)
+    monkeypatch.setattr(_bars, "datetime", SimpleNamespace(now=acquired_at.astimezone))
+    monkeypatch.setattr(equity_historical, "datetime", SimpleNamespace(now=later.astimezone))
     raw = [bar(TUESDAY, 100), bar(WEDNESDAY, 101, close=None), bar(THURSDAY, 102)]
 
     result, sdk = fetch(raw)
