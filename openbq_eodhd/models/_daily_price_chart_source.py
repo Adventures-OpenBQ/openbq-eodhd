@@ -27,9 +27,9 @@ DailyPriceDiagnostic = Literal[
     "partial_acquisition", "invalid_response", "missing_adjusted_basis",
 ]
 _PARTIAL_KEYS = {
-    "partial", "is_partial", "truncated", "incomplete", "paging", "pagination",
-    "has_more", "hasMore", "next", "next_page", "nextPage", "cursor", "next_cursor",
-    "offset", "page", "page_size", "total_pages",
+    "partial", "ispartial", "truncated", "incomplete", "paging", "pagination",
+    "hasmore", "next", "nextpage", "cursor", "nextcursor",
+    "offset", "page", "pagesize", "totalpages",
 }
 
 
@@ -100,11 +100,12 @@ class DailyPriceReceipt(ChartSourceReceipt):
 
         unaccounted_allowed = bool(flags - {"missing_adjusted_basis"})
         for facts in self.listings:
-            accounted = facts.normalized_count + facts.duplicate_count + len(facts.omissions)
+            coordinates = facts.normalized_count + len(facts.omissions)
+            accounted = coordinates + facts.duplicate_count
             if (
                 facts.normalized_count != facts.delivered_count
                 or accounted > facts.raw_count
-                or (accounted != facts.raw_count and not unaccounted_allowed)
+                or (not unaccounted_allowed and (accounted != facts.raw_count or (facts.duplicate_count and not coordinates)))
             ):
                 raise ValueError("Contradictory daily price listing counts")
             if len(set(facts.omissions)) != len(facts.omissions) or any(
@@ -132,7 +133,7 @@ def _require_array(symbol: str, response: object) -> list[dict]:
         if isinstance(payload, dict) and not any(
             payload.get(key) for key in ("error", "errors", "message")
         ):
-            if _PARTIAL_KEYS.intersection(payload):
+            if any(key.replace("_", "").lower() in _PARTIAL_KEYS for key in payload):
                 raise UnauthorizedError(f"EODHD ({symbol}): partial_acquisition")
         else:
             raise UnauthorizedError(f"EODHD ({symbol}): invalid_response")
@@ -143,16 +144,16 @@ def _require_array(symbol: str, response: object) -> list[dict]:
 
 def _matches_listing(bar: dict, symbol: str) -> bool:
     base, exchange = symbol.rsplit(".", 1)
-    for aliases, accepted in (
-        (("symbol", "ticker", "code", "_symbol"), (symbol, base)),
-        (("exchange", "exchange_code"), (exchange,)),
-    ):
-        for alias in aliases:
-            value = bar.get(alias)
-            if value is not None and (
-                not isinstance(value, str) or value.strip().upper() not in accepted
-            ):
-                return False
+    for key, value in bar.items():
+        name = key.lower()
+        if name in ("symbol", "ticker", "code", "_symbol"):
+            accepted = (symbol, base)
+        elif name in ("exchange", "exchange_code"):
+            accepted = (exchange,)
+        else:
+            continue
+        if value is not None and (not isinstance(value, str) or value.strip().upper() not in accepted):
+            return False
     return True
 
 

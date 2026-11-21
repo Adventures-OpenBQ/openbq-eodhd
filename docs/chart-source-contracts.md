@@ -155,7 +155,8 @@ known dated observations excluded because the adjusted price was invalid,
 the bar failed normalization, or the date had conflicting raw rows. With
 all unsafe flags clear, raw count equals normalized count plus duplicate
 count plus omission count. Normalized and delivered counts agree. A
-successful empty array has zero counts for that listing.
+successful empty array has zero counts for that listing. A positive safe
+duplicate count requires an original delivered or omitted coordinate.
 
 The six unsafe facts are `undatable_loss`, `conflicting_duplicates`,
 `identity_conflict`, `partial_acquisition`, `invalid_response` and
@@ -164,6 +165,14 @@ flags. Unsafe facts refuse chart admission and can account for rows whose
 coordinates are unknown or outside the request. A response object, denial,
 or malformed array fails the acquisition. Paging and partial markers also
 fail the acquisition, including when another requested listing succeeded.
+Marker names accept snake case, camel case and case variants, including
+`nextCursor` and `isPartial`. The raw observer reconciles every declared
+symbol, ticker, code and exchange alias before normalization. Contradictory
+case variants set `identity_conflict` even on a row discarded by normalization.
+The exchange suffix describes the EODHD listing namespace.
+
+The paired PR records the regression checks and installed qualification.
+[Published-PR follow-up](https://github.com/Adventures-OpenBQ/bdobb/blob/codex/v9-live-observed-returns/docs/releases/validation/v9/live-observed-returns/published-pr-follow-up.md)
 A nonempty array wholly lacking the `adjusted_close` field refuses the
 adjusted basis. A declared invalid adjusted price at a known date breaks
 adjacency. The chart uses only adjusted closes from this acquisition.

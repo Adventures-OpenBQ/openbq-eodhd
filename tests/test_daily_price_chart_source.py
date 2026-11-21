@@ -4,6 +4,7 @@
 """Daily price receipts describe the original per-listing SDK acquisitions."""
 
 from datetime import datetime, timezone
+from json import dumps
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,7 @@ from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 from pydantic import ValidationError
 
 from openbq_eodhd import eodhd_provider
+from openbq_eodhd.models._daily_price_chart_source import DailyPriceReceipt
 from openbq_eodhd.models.equity_historical import EODHDEquityHistoricalFetcher
 from tests.conftest import run_async
 
@@ -138,6 +140,10 @@ def test_raw_close_only_refuses_adjusted_basis(fetch):
         (bar("2026-10-11"), "invalid_response", []),
         (bar(WEDNESDAY, symbol="AAPL.US", ticker="MCD.US"), "identity_conflict", []),
         (bar(WEDNESDAY, code="AAPL", exchange="LSE"), "identity_conflict", []),
+        (bar(WEDNESDAY, Code="MCD", Exchange="US"), "identity_conflict", []),
+        (bar(WEDNESDAY, code="AAPL", Code="MCD", close=None), "identity_conflict", []),
+        (bar(WEDNESDAY, Symbol="AAPL.US", Ticker="MCD.US"), "identity_conflict", []),
+        (bar(WEDNESDAY, Exchange="TO"), "identity_conflict", []),
         (bar(WEDNESDAY, _symbol="MCD.US"), "identity_conflict", []),
     ],
 )
@@ -151,7 +157,7 @@ def test_unsafe_raw_row_facts_survive_normalization(fetch, raw, diagnostic, omis
 
 
 def test_agreeing_identity_aliases_are_bound_to_sdk_listing(fetch):
-    result, _ = fetch([bar(TUESDAY, code="AAPL", symbol="AAPL.US", exchange="US")])
+    result, _ = fetch([bar(TUESDAY, code="AAPL", Code=" aapl ", Symbol="aapl.us", Exchange="us")])
     assert receipt_of(result)["diagnostics"] == []
     assert len(result.result) == 1
 
@@ -197,10 +203,12 @@ def test_wrong_upstream_shape_refuses_the_request(fetch, response, reason):
         fetch(response)
 
 
-def test_failed_listing_never_returns_successful_subset(fetch):
+@pytest.mark.parametrize("later", [{"data": [], "next_page": "page2"}, [bar(TUESDAY, nextCursor="page2")],
+                                   [bar(TUESDAY, isPartial=True)]])
+def test_failed_listing_never_returns_successful_subset(fetch, later):
     responses = {
         "MCD.US": [bar(TUESDAY)],
-        "AAPL.US": {"data": [bar(TUESDAY)], "next_page": "page2"},
+        "AAPL.US": later,
     }
     calls = []
 
@@ -254,6 +262,15 @@ def test_empty_array_can_produce_a_counted_insufficient_result(fetch):
     assert receipt["diagnostics"] == []
     assert [receipt[key] for key in ("raw_count", "normalized_count", "delivered_count")] == [0, 0, 0]
     sdk.get_eod_historical_stock_market_data.assert_called_once()
+
+
+def test_safe_duplicate_needs_a_delivered_or_omitted_original(fetch):
+    result, _ = fetch([])
+    receipt = receipt_of(result)
+    receipt["raw_count"] = 1
+    receipt["listings"][0].update(raw_count=1, duplicate_count=1)
+    with pytest.raises(ValidationError, match="Contradictory daily price listing counts"):
+        DailyPriceReceipt.model_validate_json(dumps(receipt))
 
 
 def test_empty_listing_is_counted_alongside_the_other_requested_listing(fetch):
