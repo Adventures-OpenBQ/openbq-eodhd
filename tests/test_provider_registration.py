@@ -50,4 +50,4 @@ def test_phase4_macro_models_registered():
 
 def test_earnings_vs_estimates_registered():
     d = eodhd_provider.fetcher_dict
-    assert d["EodhdEarningsVsEstimates"] is d["EarningsVsEstimates"]
+    assert d["EodhdEarningsVsEstimates"].__bases__ == d["EarningsVsEstimates"].__bases__

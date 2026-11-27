@@ -12,6 +12,7 @@ requests for the same symbol within the TTL window share a single HTTP call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from openbb_core.app.model.abstract.error import OpenBBError
 from openbb_core.provider.utils.errors import EmptyDataError, UnauthorizedError
 
 from openbq_eodhd.models._client import get_client, raise_sdk_error, rest_json, sdk_call
+from openbq_eodhd import capture as _capture
 
 _TTL_SECONDS = 120.0            # L1 in-process burst-coalescing TTL
 _L2_LIBRARY = "eodhd_fundamentals_cache"
@@ -75,6 +77,17 @@ def primary_us_common_stock(bundle: dict, listing: str, exchange: str) -> bool:
         and general.get("PrimaryTicker") == listing and general.get("Type") == "Common Stock"
         and general.get("Exchange") in ("NASDAQ", "NYSE", "NYSE ARCA", "BATS")
     )
+
+
+def _cache_key(sym: str, credentials: dict[str, str] | None) -> str:
+    """Credential and canonical policy scoped coalescing; never persist secrets."""
+    token = (credentials or {}).get("eodhd_api_key")
+    if not isinstance(token, str) or not token.strip():
+        raise UnauthorizedError("Missing EODHD credential. Set EODHD_API_KEY.")
+    bridge = _capture.configured_bridge()
+    scope = bridge.cache_scope() if bridge is not None else ('standalone',)
+    identity = json.dumps([scope, token, sym], separators=(",", ":"))
+    return 'v3_' + hashlib.sha256(identity.encode()).hexdigest()
 
 
 def _reset_cache_for_tests() -> None:
@@ -184,7 +197,7 @@ def _l2_put(sym: str, acquisition: FundamentalsAcquisition) -> datetime | None:
     return stored_at
 
 
-def _read_through_sync(key: str, fetch) -> _FundamentalsCacheEntry:
+def _read_cached_through_sync(key: str, fetch) -> _FundamentalsCacheEntry:
     """L2 get -> fetch() -> L2 put. Runs in a worker thread."""
     hit = _l2_get(key)
     if hit is not None:
@@ -208,7 +221,7 @@ async def _get_cached(key: str, fetch) -> _FundamentalsCacheEntry:
         cached = _cached(key)  # another coroutine may have filled it while we waited
         if cached is not None:
             return cached
-        entry = await to_thread(_read_through_sync, key, fetch)
+        entry = await to_thread(_read_cached_through_sync, key, fetch)
         now = time.monotonic()
         for k in [k for k, (exp, _) in list(_cache.items()) if exp <= now]:
             _cache.pop(k, None)
@@ -216,12 +229,65 @@ async def _get_cached(key: str, fetch) -> _FundamentalsCacheEntry:
         return entry
 
 
+def _managed_fetch_sync(sym, credentials, *, client=None):
+    """Observe response content before the pinned SDK decodes JSON or raises."""
+    client = client or get_client(credentials)
+    observed = []
+    def observe(response, *args, **kwargs):
+        observed.append((response.content, response.status_code, datetime.now(timezone.utc)))
+        return response
+    client._session.hooks.setdefault('response', []).append(observe)
+    try:
+        with client:
+            client.get_fundamentals_data(sym)
+    except Exception:
+        if not observed:
+            raise _capture.CaptureUnavailable('provider transport unavailable') from None
+    if len(observed) != 1:
+        raise _capture.CaptureUnavailable('expected one observed fundamentals response')
+    return observed[0]
+
+
+def _read_through_sync(sym: str, credentials: dict[str, str] | None) -> dict:
+    bridge = _capture.configured_bridge()
+    if bridge is not None:
+        credentials = _capture.managed_credentials(credentials)
+        client = get_client(credentials)
+        if getattr(client._session, '_temporaldb_capture', False):
+            try:
+                with client:
+                    value = client.get_fundamentals_data(sym)
+            except (OpenBBError, UnauthorizedError, _capture.CaptureUnavailable):
+                raise
+            except Exception as exc:  # noqa: BLE001 - mapped as in _fetch_sync
+                raise_sdk_error(exc, f"fundamentals for '{sym}'")
+            if not isinstance(value, dict) or not value:
+                raise EmptyDataError(f"EODHD returned no fundamentals for '{sym}'.")
+            receipt = client._session._temporaldb_last_receipt
+            return _capture.CapturedBundle(value, capture_id=receipt['capture_id'], stale=receipt['stale'], received_at=receipt['received_at'])
+        # Optional host seam for injected SDKs: B4 observes bytes before decoding.
+        value = bridge.readthrough('fundamentals', {'symbol': sym}, lambda: _managed_fetch_sync(sym, credentials, client=client))
+        from openbq_eodhd.transport import record_receipt
+        record_receipt(dict(capture_id=value.capture_id,stale=value.stale,received_at=value.received_at,representation='requests-decoded-content'))
+        return value
+    return _read_cached_through_sync(_cache_key(sym, credentials), lambda: _fetch_sync(sym, credentials)).payload
+
+
 async def get_bundle_acquisition(
     symbol: str, exchange: str, credentials: dict[str, str] | None,
 ) -> FundamentalsAcquisition:
     """Return the same cached fundamentals bundle with its original acquisition time."""
     sym = qualify(symbol, exchange)
-    cached = await _get_cached(sym, lambda: _fetch_sync(sym, credentials))
+    if _capture.configured_bridge() is not None:
+        payload = await to_thread(_read_through_sync, sym, credentials)
+        raw_stamp = getattr(payload, 'received_at', None)
+        vintage = None
+        if not getattr(payload, 'stale', True) and isinstance(raw_stamp, str) and _CACHE_UTC_TIMESTAMP.fullmatch(raw_stamp):
+            candidate = datetime.fromisoformat(raw_stamp)
+            if candidate <= datetime.now(timezone.utc):
+                vintage = candidate
+        return FundamentalsAcquisition(payload, vintage)
+    cached = await _get_cached(_cache_key(sym, credentials), lambda: _fetch_sync(sym, credentials))
     # The L1 monotonic TTL outlives wall-clock adjustments. Only the stamp depends on the wall time.
     vintage = cached.retrieved_at
     if vintage is not None and cached.stored_at > datetime.now(timezone.utc):
@@ -251,8 +317,12 @@ async def get_earnings_v11(
 ) -> dict:
     """v1.1 `Earnings` object, cached apart from the bundle (own L1/L2 key)."""
     sym = qualify(symbol, exchange)
+    if _capture.configured_bridge() is not None:
+        # The managed transport supplies server-owned cache receipts on every
+        # acquisition; a local L1 hit would omit that required acknowledgement.
+        return await to_thread(_fetch_earnings_v11_sync, sym, _capture.managed_credentials(credentials))
     return (await _get_cached(
-        sym + _EARNINGS_V11_SUFFIX, lambda: _fetch_earnings_v11_sync(sym, credentials)
+        _cache_key(sym + _EARNINGS_V11_SUFFIX, credentials), lambda: _fetch_earnings_v11_sync(sym, credentials)
     )).payload
 
 

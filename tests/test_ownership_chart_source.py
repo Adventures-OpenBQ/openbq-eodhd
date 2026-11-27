@@ -176,7 +176,7 @@ def test_completed_opt_in_has_original_vintage_after_legacy_l1_and_l2_hits(owner
     # A legacy request and a chart request share the same actual acquisition.
     legacy = get_share_statistics(client)
     assert chart_receipts(legacy) == [] and legacy["results"][0]["symbol"] == "AAPL"
-    original = cache.data["AAPL.US"][1]["retrieved_at"]
+    original = cache.data[F._cache_key("AAPL.US", {"eodhd_api_key": "demo"})][1]["retrieved_at"]
     assert datetime.fromisoformat(original).tzinfo == timezone.utc
 
     first = get_share_statistics(client, chart_source=True)
@@ -214,7 +214,7 @@ def test_completed_opt_in_has_original_vintage_after_legacy_l1_and_l2_hits(owner
 def test_old_or_unverified_l2_stamp_preserves_legacy_and_refuses_without_refetch(ownership_http, stamp):
     client, upstream, cache = ownership_http
     seed = get_share_statistics(client)
-    entry = cache.data["AAPL.US"][1]
+    entry = cache.data[F._cache_key("AAPL.US", {"eodhd_api_key": "demo"})][1]
     if stamp is None:
         del entry["retrieved_at"]
     else:
@@ -280,7 +280,7 @@ def test_future_l2_write_and_rollback_refuse_without_refetch(ownership_http, cac
     client, upstream, cache = ownership_http
     now, _ = cache_clock
     seed = get_share_statistics(client)
-    entry = cache.data["AAPL.US"][1]
+    entry = cache.data[F._cache_key("AAPL.US", {"eodhd_api_key": "demo"})][1]
     entry["fetched_at"] = (now + timedelta(hours=1)).isoformat()
     entry["retrieved_at"] = (now + timedelta(seconds=retrieval_offset)).isoformat()
     F._reset_cache_for_tests()
@@ -293,7 +293,7 @@ def test_future_l2_write_and_rollback_refuse_without_refetch(ownership_http, cac
 def test_invalid_l2_write_format_refuses_only_source_qualification(ownership_http, cache_clock):
     client, upstream, cache = ownership_http
     seed = get_share_statistics(client)
-    entry = cache.data["AAPL.US"][1]
+    entry = cache.data[F._cache_key("AAPL.US", {"eodhd_api_key": "demo"})][1]
     entry["fetched_at"] = entry["fetched_at"].replace("T", "X")
     F._reset_cache_for_tests()
     chart = get_share_statistics(client, chart_source=True)
@@ -332,7 +332,7 @@ def test_fresh_inverted_vintage_is_data_only_in_both_tiers(
     response = get_share_statistics(client, chart_source=True)
     assert response["results"][0]["symbol"] == "AAPL"
     assert chart_receipts(response) == []
-    assert "retrieved_at" not in cache.data["AAPL.US"][1]
+    assert "retrieved_at" not in cache.data[F._cache_key("AAPL.US", {"eodhd_api_key": "demo"})][1]
     F._reset_cache_for_tests()
     assert chart_receipts(get_share_statistics(client, chart_source=True)) == []
     upstream.assert_called_once()

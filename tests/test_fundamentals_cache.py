@@ -135,13 +135,13 @@ def test_expired_entries_swept_on_next_populate(monkeypatch):
     monkeypatch.setattr(F.time, "monotonic", lambda: 1000.0)
 
     asyncio.run(F.get_bundle("AAAA", "US", {"eodhd_api_key": "PLACEHOLDER"}))
-    assert "AAAA.US" in F._cache
+    assert F._cache_key("AAAA.US", {"eodhd_api_key": "PLACEHOLDER"}) in F._cache
 
     monkeypatch.setattr(F.time, "monotonic", lambda: 1000.0 + F._TTL_SECONDS + 1)
     asyncio.run(F.get_bundle("BBBB", "US", {"eodhd_api_key": "PLACEHOLDER"}))
 
-    assert "AAAA.US" not in F._cache
-    assert "BBBB.US" in F._cache
+    assert F._cache_key("AAAA.US", {"eodhd_api_key": "PLACEHOLDER"}) not in F._cache
+    assert F._cache_key("BBBB.US", {"eodhd_api_key": "PLACEHOLDER"}) in F._cache
 
 
 def test_l2_unavailable_falls_back_to_live_fetch(monkeypatch):
@@ -202,9 +202,9 @@ def test_earnings_v11_is_cached_apart_from_the_bundle(monkeypatch):
 
     asyncio.run(go())
     assert len(calls) == 1
-    assert set(F._cache) == {"AAPL.US", "AAPL.US#earnings-v1.1"}
+    assert set(F._cache) == {F._cache_key("AAPL.US", CREDS), F._cache_key("AAPL.US#earnings-v1.1", CREDS)}
     assert {key: acquisition.payload for key, acquisition in l2.items()} == {
-        "AAPL.US": BUNDLE, "AAPL.US#earnings-v1.1": EARNINGS,
+        F._cache_key("AAPL.US", CREDS): BUNDLE, F._cache_key("AAPL.US#earnings-v1.1", CREDS): EARNINGS,
     }
 
     F._reset_cache_for_tests()

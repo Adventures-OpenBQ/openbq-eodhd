@@ -20,6 +20,8 @@ from openbb_core.provider.utils.errors import UnauthorizedError
 
 def get_client(credentials: dict[str, str] | None):
     """Build an official-SDK APIClient from OpenBB credentials."""
+    from openbq_eodhd.capture import managed_credentials
+    credentials = managed_credentials(credentials)
     api_key = (credentials or {}).get("eodhd_api_key")
     if not api_key:
         raise UnauthorizedError("Missing EODHD credential. Set EODHD_API_KEY.")
@@ -31,6 +33,11 @@ def get_client(credentials: dict[str, str] | None):
     except ValueError as exc:  # the SDK rejects malformed keys up front
         raise UnauthorizedError(f"EODHD API key rejected: {exc}") from exc
     apply_openbb_http_settings(client)
+    from openbq_eodhd.capture import configured_bridge
+    bridge = configured_bridge()
+    if bridge is not None:
+        from openbq_eodhd.transport import attach_session
+        attach_session(client._session, bridge)
     return client
 
 
@@ -101,6 +108,9 @@ def raise_sdk_error(exc: Exception, context: str) -> NoReturn:
     # pylint: disable=import-outside-toplevel
     import requests
 
+    from openbq_eodhd.capture import CaptureUnavailable
+    if isinstance(exc, CaptureUnavailable):
+        raise exc
     status = getattr(exc, "status_code", None)
     if status in (402, 429):
         raise UnauthorizedError(

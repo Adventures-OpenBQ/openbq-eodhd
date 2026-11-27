@@ -42,7 +42,13 @@ ROUTABLE = [k for k in STANDARD_KEYS if k in PATHS]  # excludes EquityTicks (no 
 def test_mirror_is_same_fetcher(std_key):
     # Spec Testing #3 (user ruling 2026-09-30): identical fetcher objects cannot
     # return different rows, so this identity check replaces a rows fixture.
-    assert eodhd_provider.fetcher_dict[f"Eodhd{std_key}"] is eodhd_provider.fetcher_dict[std_key]
+    from openbq_eodhd.transport import ENDPOINT_MANIFEST
+    # Registration-specific capture wrappers retain the same concrete fetcher
+    # and audited declaration on both API paths.
+    alias = eodhd_provider.fetcher_dict[f"Eodhd{std_key}"]
+    original = eodhd_provider.fetcher_dict[std_key]
+    assert alias.__bases__ == original.__bases__
+    assert ENDPOINT_MANIFEST[f"Eodhd{std_key}"] == ENDPOINT_MANIFEST[std_key]
 
 
 @pytest.mark.parametrize("std_key", ROUTABLE)
