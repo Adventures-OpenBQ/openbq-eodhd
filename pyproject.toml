@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openbq-eodhd"
-version = "9.0.1"
+version = "11.0.0"
 description = "EODHD provider extension for OpenBB (equity/crypto/currency historical, fundamentals, corporate actions, ownership, insider trading, analyst estimates)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,10 +38,17 @@ eodhd = "openbq_eodhd.eodhd_router:router"
 include = ["openbq_eodhd*"]
 
 [tool.setuptools.package-data]
-openbq_eodhd = ["assets/*.json", "_vendor/eodhd/LICENSE"]
+openbq_eodhd = ["assets/*.json", "endpoint_manifest.json", "_vendor/eodhd/LICENSE"]
 
 [project.optional-dependencies]
-dev = ["ruff==0.15.22", "pytest", "httpx2"]  # httpx2: Starlette TestClient
+# Tests exercise both provider-owned and standard OpenBB HTTP routes. The
+# standalone core package deliberately does not install those routers.
+dev = [
+    "ruff==0.15.22", "pytest", "httpx2", "openbb-platform-api==2.0.1",
+    "openbb-crypto==2.0.0", "openbb-currency==2.0.0", "openbb-derivatives==2.0.0",
+    "openbb-economy==2.0.0", "openbb-equity==2.0.0", "openbb-etf==2.0.0",
+    "openbb-fixedincome==2.0.0", "openbb-index==2.0.0", "openbb-news==2.0.0",
+]
 
 [tool.ruff]
 target-version = "py310"
